@@ -8,21 +8,20 @@ on:
         required: true
         default: '[]'
 
-env:
-  PYTHONIOENCODING: utf-8
-
 jobs:
   skills-evaluation:
     name: Skills 深度评分
     runs-on: ubuntu-latest
+    env:
+      PYTHONIOENCODING: utf-8
+      LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+      FEISHU_WEBHOOK_MAIN: ${{ secrets.FEISHU_WEBHOOK_MAIN }}
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
-
-      - name: 加载 .env 环境变量
-        uses: falti/dotenv-action@v1
-        with:
-          path: ./.env
 
       - name: 设置 Python 3.10
         uses: actions/setup-python@v5
@@ -34,8 +33,6 @@ jobs:
 
       - name: 运行 Skills 深度评分
         id: evaluation
-        env:
-          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
         run: |
           STOCKS='${{ github.event.inputs.stocks }}'
           echo "=== 收到股票列表 ==="
@@ -47,9 +44,6 @@ jobs:
           cat analysis_result.json
 
       - name: 飞书推送评分结果
-        id: notify
-        env:
-          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
         run: |
           python scripts/feishu_notifier.py --result analysis_result.json
 

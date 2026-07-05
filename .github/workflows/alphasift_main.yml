@@ -1,4 +1,4 @@
-name: AlphaSift 主节点筛选
+﻿name: AlphaSift 主节点筛选
 
 on:
   schedule:
@@ -11,21 +11,21 @@ on:
         required: false
         default: ''
 
-env:
-  PYTHONIOENCODING: utf-8
-
 jobs:
   alpha-sift-discovery:
     name: AlphaSift 初选
     runs-on: ubuntu-latest
+    env:
+      PYTHONIOENCODING: utf-8
+      LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+      FEISHU_WEBHOOK_MAIN: ${{ secrets.FEISHU_WEBHOOK_MAIN }}
+      ALPHASIFT_PROJECT_PATH: ${{ secrets.ALPHASIFT_PROJECT_PATH }}
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
-
-      - name: 加载 .env 环境变量
-        uses: falti/dotenv-action@v1
-        with:
-          path: ./.env
 
       - name: 设置 Python 3.10
         uses: actions/setup-python@v5
@@ -79,13 +79,13 @@ jobs:
           echo "=== 后 5 支 -> 账户 C ==="
           echo "$LAST5_JSON"
 
-          echo "--- 触发账户 B (zf6242206/alphasift-skills) ---"
+          echo "--- 触发账户 B (zf6242206/AI-Native) ---"
           HTTP_CODE_B=$(curl -s -o /dev/null -w "%{http_code}" \
             -X POST \
             -H "Accept: application/vnd.github.v3+json" \
             -H "Authorization: token $GH_PAT_ACCOUNT_B" \
             -d "{\"inputs\":{\"stocks\":\"$FIRST5_JSON\"}}" \
-            "https://api.github.com/repos/zf6242206/alphasift-skills/actions/workflows/skills_runner.yml/dispatches" || echo "000")
+            "https://api.github.com/repos/zf6242206/AI-Native/actions/workflows/skills_runner.yml/dispatches" || echo "000")
 
           if [ "$HTTP_CODE_B" != "204" ] && [ "$HTTP_CODE_B" != "201" ]; then
             echo "::warning::账户 B 触发失败，HTTP 状态码: $HTTP_CODE_B"
@@ -93,13 +93,13 @@ jobs:
             echo "账户 B 触发成功"
           fi
 
-          echo "--- 触发账户 C (fz6242025/alphasift-skills) ---"
+          echo "--- 触发账户 C (fz6242025/AI-Native) ---"
           HTTP_CODE_C=$(curl -s -o /dev/null -w "%{http_code}" \
             -X POST \
             -H "Accept: application/vnd.github.v3+json" \
             -H "Authorization: token $GH_PAT_ACCOUNT_C" \
             -d "{\"inputs\":{\"stocks\":\"$LAST5_JSON\"}}" \
-            "https://api.github.com/repos/fz6242025/alphasift-skills/actions/workflows/skills_runner.yml/dispatches" || echo "000")
+            "https://api.github.com/repos/fz6242025/AI-Native/actions/workflows/skills_runner.yml/dispatches" || echo "000")
 
           if [ "$HTTP_CODE_C" != "204" ] && [ "$HTTP_CODE_C" != "201" ]; then
             echo "::warning::账户 C 触发失败，HTTP 状态码: $HTTP_CODE_C"
@@ -111,8 +111,6 @@ jobs:
           echo "http_code_c=$HTTP_CODE_C" >> $GITHUB_OUTPUT
 
       - name: 飞书通知主节点结果
-        env:
-          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
         run: |
           STOCKS="${{ steps.discovery.outputs.stock_list }}"
           FIRST5="${{ steps.discovery.outputs.first5 }}"
