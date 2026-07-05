@@ -1,0 +1,56 @@
+﻿name: AlphaSift Skills 深度评分
+
+on:
+  workflow_dispatch:
+    inputs:
+      stocks:
+        description: '股票代码 JSON 数组，例如 ["600519","000858"]'
+        required: true
+        default: '[]'
+
+env:
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  skills-evaluation:
+    name: Skills 深度评分
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 加载 .env 环境变量
+        uses: falti/dotenv-action@v1
+        with:
+          path: ./.env
+
+      - name: 设置 Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 运行 Skills 深度评分
+        id: evaluation
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+        run: |
+          STOCKS='${{ github.event.inputs.stocks }}'
+          echo "=== 收到股票列表 ==="
+          echo "$STOCKS"
+
+          python scripts/run_skills_evaluation.py --stocks "$STOCKS"
+
+          echo "=== 评分完成 ==="
+          cat analysis_result.json
+
+      - name: 飞书推送评分结果
+        id: notify
+        env:
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+        run: |
+          python scripts/feishu_notifier.py --result analysis_result.json
+
+          echo "飞书通知完成"

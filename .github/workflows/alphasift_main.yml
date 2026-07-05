@@ -1,0 +1,129 @@
+﻿name: AlphaSift 主节点筛选
+
+on:
+  schedule:
+    - cron: '0 1 * * 1-5'
+    - cron: '30 4 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      stocks_filter:
+        description: '可选：只筛选特定股票代码（逗号分隔），留空则全量筛选'
+        required: false
+        default: ''
+
+env:
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  alpha-sift-discovery:
+    name: AlphaSift 初选
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 加载 .env 环境变量
+        uses: falti/dotenv-action@v1
+        with:
+          path: ./.env
+
+      - name: 设置 Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 运行 AlphaSift 初选
+        id: discovery
+        run: |
+          FILTER='${{ github.event.inputs.stocks_filter }}'
+          if [ -n "$FILTER" ]; then
+            python scripts/alphasift_discovery.py --output top_10_stocks.json --filter "$FILTER"
+          else
+            python scripts/alphasift_discovery.py --output top_10_stocks.json
+          fi
+
+          echo "=== 初选结果 ==="
+          cat top_10_stocks.json
+
+          STOCKS=$(python -c "
+          import json
+          with open('top_10_stocks.json') as f:
+              data = json.load(f)
+          stocks = [s.get('code', s) if isinstance(s, dict) else s for s in data]
+          print(','.join(stocks))
+          ")
+          echo "stock_list=$STOCKS" >> $GITHUB_OUTPUT
+
+          FIRST5=$(echo "$STOCKS" | cut -d',' -f1-5)
+          LAST5=$(echo "$STOCKS" | cut -d',' -f6-10)
+          echo "first5=$FIRST5" >> $GITHUB_OUTPUT
+          echo "last5=$LAST5" >> $GITHUB_OUTPUT
+
+      - name: 拆分 Top 10 并通知从节点
+        id: trigger-slaves
+        env:
+          GH_PAT_ACCOUNT_B: ${{ secrets.GH_PAT_ACCOUNT_B }}
+          GH_PAT_ACCOUNT_C: ${{ secrets.GH_PAT_ACCOUNT_C }}
+        run: |
+          FIRST5="${{ steps.discovery.outputs.first5 }}"
+          LAST5="${{ steps.discovery.outputs.last5 }}"
+
+          FIRST5_JSON=$(echo "$FIRST5" | tr ',' '\n' | jq -R . | jq -s .)
+          LAST5_JSON=$(echo "$LAST5" | tr ',' '\n' | jq -R . | jq -s .)
+
+          echo "=== 前 5 支 -> 账户 B ==="
+          echo "$FIRST5_JSON"
+          echo "=== 后 5 支 -> 账户 C ==="
+          echo "$LAST5_JSON"
+
+          echo "--- 触发账户 B (zf6242206/alphasift-skills) ---"
+          HTTP_CODE_B=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "Authorization: token $GH_PAT_ACCOUNT_B" \
+            -d "{\"inputs\":{\"stocks\":\"$FIRST5_JSON\"}}" \
+            "https://api.github.com/repos/zf6242206/alphasift-skills/actions/workflows/skills_runner.yml/dispatches" || echo "000")
+
+          if [ "$HTTP_CODE_B" != "204" ] && [ "$HTTP_CODE_B" != "201" ]; then
+            echo "::warning::账户 B 触发失败，HTTP 状态码: $HTTP_CODE_B"
+          else
+            echo "账户 B 触发成功"
+          fi
+
+          echo "--- 触发账户 C (fz6242025/alphasift-skills) ---"
+          HTTP_CODE_C=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "Authorization: token $GH_PAT_ACCOUNT_C" \
+            -d "{\"inputs\":{\"stocks\":\"$LAST5_JSON\"}}" \
+            "https://api.github.com/repos/fz6242025/alphasift-skills/actions/workflows/skills_runner.yml/dispatches" || echo "000")
+
+          if [ "$HTTP_CODE_C" != "204" ] && [ "$HTTP_CODE_C" != "201" ]; then
+            echo "::warning::账户 C 触发失败，HTTP 状态码: $HTTP_CODE_C"
+          else
+            echo "账户 C 触发成功"
+          fi
+
+          echo "http_code_b=$HTTP_CODE_B" >> $GITHUB_OUTPUT
+          echo "http_code_c=$HTTP_CODE_C" >> $GITHUB_OUTPUT
+
+      - name: 飞书通知主节点结果
+        env:
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+        run: |
+          STOCKS="${{ steps.discovery.outputs.stock_list }}"
+          FIRST5="${{ steps.discovery.outputs.first5 }}"
+          LAST5="${{ steps.discovery.outputs.last5 }}"
+          CODE_B="${{ steps.trigger-slaves.outputs.http_code_b }}"
+          CODE_C="${{ steps.trigger-slaves.outputs.http_code_c }}"
+
+          python scripts/feishu_notifier.py \
+            --mode main \
+            --stocks "$STOCKS" \
+            --first5 "$FIRST5" \
+            --last5 "$LAST5" \
+            --trigger-code-b "$CODE_B" \
+            --trigger-code-c "$CODE_C"
