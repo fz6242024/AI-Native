@@ -1,4 +1,4 @@
-﻿name: AlphaSift 主节点筛选
+name: AlphaSift 主节点筛选
 
 on:
   schedule:
