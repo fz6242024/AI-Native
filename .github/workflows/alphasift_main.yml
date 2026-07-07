@@ -71,8 +71,8 @@ jobs:
           FIRST5="${{ steps.discovery.outputs.first5 }}"
           LAST5="${{ steps.discovery.outputs.last5 }}"
 
-          FIRST5_JSON="$FIRST5"
-          LAST5_JSON="$LAST5"
+          FIRST5_JSON=$(echo "$FIRST5" | tr "," "\n" | jq -R . | jq -s .)
+          LAST5_JSON=$(echo "$LAST5" | tr "," "\n" | jq -R . | jq -s .)
 
           echo "=== 前 5 支 -> 账户 B ==="
           echo "$FIRST5_JSON"

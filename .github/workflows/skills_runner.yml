@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       stocks:
-        description: "股票代码，逗号分隔"
+        description: "股票代码 JSON 数组，例如 [\"600519\",\"000858\"]"
         required: true
-        default: ""
+        default: "[]"
 
 jobs:
   skills-evaluation:
@@ -38,8 +38,7 @@ jobs:
           echo "=== 收到股票列表 ==="
           echo "$STOCKS"
 
-          STOCKS_JSON=$(echo "$STOCKS" | tr ',' '\n' | jq -R . | jq -s .)
-          python scripts/run_skills_evaluation.py --stocks "$STOCKS_JSON"
+          python scripts/run_skills_evaluation.py --stocks "$STOCKS"
 
           echo "=== 评分完成 ==="
           cat analysis_result.json
