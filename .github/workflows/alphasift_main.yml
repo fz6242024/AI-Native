@@ -84,7 +84,7 @@ jobs:
             -X POST \
             -H "Accept: application/vnd.github.v3+json" \
             -H "Authorization: token $GH_PAT_ACCOUNT_B" \
-            -d "{\"inputs\":{\"stocks\":$FIRST5_JSON}}" \
+            -d "{\"inputs\":{\"stocks\":\"$FIRST5_JSON\"}}"  \
             "https://api.github.com/repos/zf6242206/AI-Native/actions/workflows/skills_runner.yml/dispatches" || echo "000")
 
           if [ "$HTTP_CODE_B" != "204" ] && [ "$HTTP_CODE_B" != "201" ]; then
@@ -98,7 +98,7 @@ jobs:
             -X POST \
             -H "Accept: application/vnd.github.v3+json" \
             -H "Authorization: token $GH_PAT_ACCOUNT_C" \
-            -d "{\"inputs\":{\"stocks\":$LAST5_JSON}}" \
+            -d "{\"inputs\":{\"stocks\":\"$LAST5_JSON\"}}"  \
             "https://api.github.com/repos/fz6242025/AI-Native/actions/workflows/skills_runner.yml/dispatches" || echo "000")
 
           if [ "$HTTP_CODE_C" != "204" ] && [ "$HTTP_CODE_C" != "201" ]; then
