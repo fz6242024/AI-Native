@@ -1,12 +1,12 @@
-﻿name: AlphaSift Skills 深度评分
+name: AlphaSift Skills 深度评分
 
 on:
   workflow_dispatch:
     inputs:
       stocks:
-        description: '股票代码 JSON 数组，例如 ["600519","000858"]'
+        description: "股票代码，逗号分隔"
         required: true
-        default: '[]'
+        default: ""
 
 jobs:
   skills-evaluation:
@@ -26,7 +26,7 @@ jobs:
       - name: 设置 Python 3.10
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.10"
 
       - name: 安装依赖
         run: pip install -r requirements.txt
@@ -34,11 +34,12 @@ jobs:
       - name: 运行 Skills 深度评分
         id: evaluation
         run: |
-          STOCKS='${{ github.event.inputs.stocks }}'
+          STOCKS="${{ github.event.inputs.stocks }}"
           echo "=== 收到股票列表 ==="
           echo "$STOCKS"
 
-          python scripts/run_skills_evaluation.py --stocks "$STOCKS"
+          STOCKS_JSON=$(echo "$STOCKS" | tr ',' '\n' | jq -R . | jq -s .)
+          python scripts/run_skills_evaluation.py --stocks "$STOCKS_JSON"
 
           echo "=== 评分完成 ==="
           cat analysis_result.json
