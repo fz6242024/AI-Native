@@ -99,11 +99,28 @@ def _ensure_alphasift_available() -> bool:
         return False
 
 
-def _run_alphasift_screen(strategy: str, top_n: int = 10, use_llm: bool = True) -> list:
+def _run_alphasift_screen(strategy: str, top_n: int = 10, use_llm: bool = False, snapshot_df: object = None) -> list:
     """调用 AlphaSift 的 screen() 函数进行初选。"""
     from alphasift.pipeline import screen
+    from alphasift import snapshot as snap_module
 
     log.info("使用策略 [%s] 运行 AlphaSift 初选 (LLM=%s)...", strategy, use_llm)
+    
+    # Monkey-patch fetch_snapshot_with_fallback to return cached data
+    if snapshot_df is not None:
+        original_fetch = snap_module.fetch_snapshot_with_fallback
+        
+        def patched_fetch(*args, **kwargs):
+            # Return the cached DataFrame directly, skipping network
+            cached = snapshot_df.copy()
+            cached.attrs["snapshot_source"] = "cached"
+            cached.attrs["fallback_used"] = True
+            cached.attrs["stale"] = True
+            cached.attrs["source_errors"] = []
+            log.info("  使用缓存快照（跳过网络请求）")
+            return cached
+        
+        snap_module.fetch_snapshot_with_fallback = patched_fetch
 
     try:
         result = screen(
@@ -125,6 +142,7 @@ def _run_alphasift_screen(strategy: str, top_n: int = 10, use_llm: bool = True) 
             "code": p.code,
             "name": p.name,
             "score": round(p.final_score, 4),
+            "strategy": strategy,
         })
         log.info("  %d. %s (%s)  评分: %.4f", len(stocks), p.name, p.code, p.final_score)
 
@@ -139,7 +157,61 @@ def _generate_mock_stocks(count: int = 10) -> list:
     pool = _SIMULATED_STOCKS[:]
     random.shuffle(pool)
     selected = pool[:count]
-    return [{"code": item["code"], "name": item["name"], "score": 0} for item in selected]
+    return [{"code": item["code"], "name": item["name"], "score": 0, "strategy": "mock"} for item in selected]
+
+
+_cached_snapshot_path = None
+_cached_snapshot_df = None
+
+def _fetch_and_cache_snapshot(output_file: str):
+    """预取快照并缓存到本地，供后续策略复用。"""
+    global _cached_snapshot_path
+    
+    if not _ensure_alphasift_available():
+        log.warning("AlphaSift 不可用，跳过快照缓存")
+        return None
+    
+    from alphasift.snapshot import fetch_snapshot_with_fallback
+    from alphasift.config import Config
+    from datetime import datetime, timezone
+    
+    config = Config.from_env()
+    sources = config.snapshot_source_priority
+    log.info("正在获取全市场快照 (数据源: %s)...", ", ".join(sources))
+    
+    try:
+        result = fetch_snapshot_with_fallback(
+            sources,
+            fallback_snapshot_path=config.fallback_snapshot_path,
+        )
+        log.info("快照获取完成: %d 行，来源: %s", len(result), result.attrs.get("snapshot_source", "unknown"))
+        
+        # Save in AlphaSift's expected fallback format
+        cache_path = Path(output_file).parent / '.snapshot_cache.json'
+        
+        payload = {
+            "version": 1,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "metadata": {
+                "snapshot_source": result.attrs.get("snapshot_source", "unknown"),
+                "row_count": len(result),
+            },
+            "frame": {
+                "columns": list(result.columns),
+                "data": result.values.tolist(),
+            }
+        }
+        
+        with open(cache_path, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        
+        log.info("快照已缓存到: %s (%d 行)", cache_path, len(result))
+        _cached_snapshot_path = str(cache_path)
+        _cached_snapshot_df = result  # Store DataFrame for monkey-patching
+        return _cached_snapshot_path
+    except Exception as e:
+        log.warning("快照获取失败: %s，将使用 fallback", e)
+        return None
 
 
 def discover_stocks(output_file: str, strategy: str = None, use_llm: bool = True, stock_filter: str = None):
@@ -147,6 +219,9 @@ def discover_stocks(output_file: str, strategy: str = None, use_llm: bool = True
     log.info("=" * 60)
     log.info("AlphaSift 初选开始  |  %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     log.info("=" * 60)
+    
+    # Pre-fetch snapshot once for all strategies
+    snapshot_cache = _fetch_and_cache_snapshot(output_file)
 
     # 确定使用的策略
     if strategy:
@@ -155,17 +230,63 @@ def discover_stocks(output_file: str, strategy: str = None, use_llm: bool = True
             strategy = "balanced_alpha"
         log.info("指定策略: %s", strategy)
     else:
-        strategy = "balanced_alpha"
-        log.info("未指定策略，使用默认: %s", strategy)
+        # 默认使用全部 10 个策略，每个选 Top 1
+        strategy = None
+        log.info("未指定策略，使用全部 %d 个策略各选 Top 1", len(STRATEGIES))
+        # Set flag to skip network for all subsequent strategy runs
+        os.environ["ALPHASIFT_SKIP_NETWORK"] = "1"
 
     # 尝试 AlphaSift 真实初选
     if _ensure_alphasift_available():
         try:
-            stocks = _run_alphasift_screen(strategy, top_n=10, use_llm=use_llm)
-            if stocks:
-                log.info("AlphaSift 真实初选完成，选出 %d 支股票", len(stocks))
+            if strategy:
+                # 单策略模式（兼容旧用法）
+                stocks = _run_alphasift_screen(strategy, top_n=10, use_llm=use_llm)
+                if stocks:
+                    log.info("AlphaSift 真实初选完成，选出 %d 支股票", len(stocks))
+                else:
+                    raise ValueError("AlphaSift 返回空结果")
             else:
-                raise ValueError("AlphaSift 返回空结果")
+                # 新逻辑：遍历所有策略，每个选 Top 1
+                used_codes = set()
+                all_stocks = []
+
+                for strat_name in STRATEGIES:
+                    picks = _run_alphasift_screen(strat_name, top_n=10, use_llm=False,
+                                                   snapshot_df=_cached_snapshot_df)
+
+                    if not picks:
+                        log.warning("  [%s] 未选出股票，跳过", strat_name)
+                        continue
+
+                    # 取该策略的第一支未被占用的股票
+                    picked = None
+                    for pick in picks:
+                        if pick["code"] not in used_codes:
+                            picked = pick
+                            break
+
+                    if picked:
+                        all_stocks.append(picked)
+                        used_codes.add(picked["code"])
+                        log.info("  [%s] 选中: %s (%s)  评分: %.4f",
+                                 strat_name, picked["name"], picked["code"], picked["score"])
+                    else:
+                        log.warning("  [%s] 所有候选已被占用，跳过", strat_name)
+
+                stocks = all_stocks
+
+                # 如果不足 10 支，用剩余策略补足
+                if len(stocks) < 10:
+                    log.warning("仅选出 %d 支，尝试用模拟数据补足", len(stocks))
+                    mock = _generate_mock_stocks(10 - len(stocks))
+                    for m in mock:
+                        if m["code"] not in used_codes:
+                            stocks.append(m)
+                            used_codes.add(m["code"])
+                            log.info("  [补足] %s (%s)", m["name"], m["code"])
+
+                log.info("AlphaSift 真实初选完成，共选出 %d 支股票", len(stocks))
         except Exception as e:
             log.error("AlphaSift 真实初选执行出错: %s", e)
             log.info("回退到模拟数据")
@@ -180,9 +301,14 @@ def discover_stocks(output_file: str, strategy: str = None, use_llm: bool = True
         stocks = [s for s in stocks if s.get("code", "") in codes]
         log.info("过滤条件: %s -> 保留 %d 支", stock_filter, len(stocks))
     
-    # 保存为 JSON
+    # 保存为 JSON (include all fields including strategy)
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(stocks, f, ensure_ascii=False, indent=2)
+    log.info("结果已保存到: %s", output_file)
+    
+    # Debug: print what's being saved
+    if stocks:
+        log.info("保存的股票字段: %s", list(stocks[0].keys()))
 
     log.info("结果已保存到: %s", output_file)
 
@@ -193,7 +319,8 @@ def discover_stocks(output_file: str, strategy: str = None, use_llm: bool = True
         code = s["code"]
         name = s.get("name", "")
         score = s.get("score", 0)
-        log.info("  %d. %s (%s)  评分: %.4f", i, name, code, score)
+        strat = s.get("strategy", "")
+        log.info("  %d. %s (%s)  评分: %.4f  [策略: %s]", i, name, code, score, strat)
     log.info("-" * 40)
     log.info("初选完成！共选出 %d 支股票。", len(stocks))
 
