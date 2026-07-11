@@ -70,331 +70,51 @@ if not LLM_BASE_URL:
 log.info("LLM 配置: BASE_URL=%s, MODEL=%s", LLM_BASE_URL, LLM_MODEL)
 
 # ---------- 19 个 Skills 及其研究框架 ----------
-SKILLS_CONFIG = {
-    "investment-research": {
-        "name": "投资研究",
-        "prompt": """对股票 {code}（{name}）进行巴菲特-芒格-段永平-李录四大师综合分析框架评估。
 
-请从以下维度评估并输出 JSON：
-- 护城河类型及深度（品牌/成本/网络效应/转换成本/特许经营权）
-- 管理层资本配置能力（分红/回购/再投资/并购记录）
-- 自由现金流质量（经营现金流/自由现金流/ROIC）
-- 估值合理性（当前估值处于历史什么分位）
+def load_skills_config():
+    """从 skills/prompts/ 目录加载 19 个 Skill 的 prompt 配置。"""
+    prompts_dir = Path(__file__).resolve().parent.parent / 'skills' / 'prompts'
+    config = {}
+    
+    if not prompts_dir.is_dir():
+        log.warning('Skills prompts 目录不存在: %s，使用空配置', prompts_dir)
+        return config
+    
+    for yaml_file in sorted(prompts_dir.glob('*.yaml')):
+        key = yaml_file.stem
+        name = key
+        prompt_text = ''
+        
+        # 简单解析 YAML（不需要 pyyaml）
+        with open(yaml_file, 'r', encoding='utf-8') as f:
+            in_prompt = False
+            for line in f:
+                stripped = line.rstrip()
+                if stripped.startswith('key: '):
+                    key = stripped[5:].strip()
+                elif stripped.startswith('name: '):
+                    name = stripped[6:].strip()
+                elif stripped.startswith('prompt: |'):
+                    in_prompt = True
+                    continue
+                elif in_prompt:
+                    if stripped.startswith('  '):
+                        prompt_text += stripped[2:] + '\n'
+                    else:
+                        in_prompt = False
+        
+        if prompt_text:
+            config[key] = {
+                'name': name,
+                'prompt': prompt_text.strip(),
+            }
+    
+    log.info('加载了 %d 个 Skills prompt 文件', len(config))
+    return config
 
-输出格式：
-{{
-  "score": 0-100,
-  "judgment": "核心判断，30字以内",
-  "core_risk": "核心风险点"
-}}""",
-    },
-    "investment-team": {
-        "name": "投研团队",
-        "prompt": """对股票 {code}（{name}）进行机构持仓与基金经理博弈分析。
 
-请评估：
-- 公募基金持仓变化（季度增减仓趋势）
-- 北向资金流向（近期增持/减持）
-- 机构调研频次与态度
-- 是否有明星基金经理重仓
+SKILLS_CONFIG = load_skills_config()
 
-输出格式：
-{{
-  "score": 0-100,
-  "judgment": "核心判断，30字以内",
-  "core_risk": "核心风险点"
-}}""",
-    },
-    "management-deep-dive": {
-        "name": "管理层纵深",
-        "prompt": """对股票 {code}（{name}）进行管理层深度调研。
-
-请评估：
-- 管理层历史治理记录（诚信度/执行力）
-- 股权激励方案（是否合理/是否与业绩挂钩）
-- 管理层公开表态的一致性
-- 是否存在盲点或红线问题
-
-输出格式：
-{{
-  "score": 0-100,
-  "judgment": "核心判断，30字以内",
-  "core_risk": "核心风险点"
-}}""",
-    },
-    "private-company-research": {
-        "name": "未上市公司研究",
-        "prompt": """对股票 {code}（{name}）进行未上市影子对手分析。
-
-请评估：
-- 同行业未上市竞争对手的实力对比
-- 产业链上下游映射分析
-- 潜在进入者威胁
-- 竞争格局变化趋势
-
-输出格式：
-{{
-  "score": 0-100,
-  "judgment": "核心判断，30字以内",
-  "core_risk": "核心风险点"
-}}""",
-    },
-    "deep-company-series": {
-        "name": "深度公司系列",
-        "prompt": """对股票 {code}（{name}）进行商业模式演变深度追踪。
-
-请评估：
-- 公司成立以来关键发展阶段
-- 商业模式迭代路径
-- 核心竞争力演变
-- 未来增长点判断
-
-输出格式：
-{{
-  "score": 0-100,
-  "judgment": "核心判断，30字以内",
-  "core_risk": "核心风险点"
-}}""",
-    },
-    "earnings-review": {
-        "name": "财报精读",
-        "prompt": """对股票 {code}（{name}）进行杜邦分析拆解。
-
-请评估：
-- ROE 拆解（净利率×周转率×杠杆）
-- 扣非净利润含金量
-- 经营性现金流健康度
-- 资产负债结构
-
-输出格式：
-{{
-  "score": 0-100,
-  "judgment": "核心判断，30字以内",
-  "core_risk": "核心风险点"
-}}""",
-    },
-    "earnings-team": {
-        "name": "财报团队",
-        "prompt": """对股票 {code}（{name}）进行业绩说明会纪要分析。
-
-请评估：
-- 管理层业绩指引的可靠性
-- 业绩说明会语气诚实度
-- 管理层对关键问题的回应态度
-- 预期与实际的偏差分析
-
-输出格式：
-{{
-  "score": 0-100,
-  "judgment": "核心判断，30字以内",
-  "core_risk": "核心风险点"
-}}""",
-    },
-    "industry-research": {
-        "name": "行业研究",
-        "prompt": """对股票 {code}（{name}）进行行业生命周期象限分析。
-
-请评估：
-- 行业所处生命周期阶段（导入/成长/成熟/衰退）
-- 行业景气度趋势
-- 政策导向影响
-- 行业集中度变化
-
-输出格式：
-{{
-  "score": 0-100,
-  "judgment": "核心判断，30字以内",
-  "core_risk": "核心风险点"
-}}""",
-    },
-    "industry-funnel": {
-        "name": "行业漏斗",
-        "prompt": """对股票 {code}（{name}）进行行业漏斗筛选分析。
-
-请评估：
-- 公司在行业中的相对地位
-- 筛选核心标的的竞争力
-- 行业内的差异化优势
-- 被淘汰风险
-
-输出格式：
-{{
-  "score": 0-100,
-  "judgment": "核心判断，30字以内",
-  "core_risk": "核心风险点"
-}}""",
-    },
-    "quality-screen": {
-        "name": "质量筛选",
-        "prompt": """对股票 {code}（{name}）进行质量筛选评估。
-
-请评估：
-- 盈利质量（ROE/ROIC/毛利率趋势）
-- 财务稳健性（负债率/利息保障倍数）
-- 数据可靠性（审计意见/会计政策变更）
-- 经营稳定性（收入/利润波动率）
-
-输出格式：
-{{
-  "score": 0-100,
-  "judgment": "核心判断，30字以内",
-  "core_risk": "核心风险点"
-}}""",
-    },
-    "bottleneck-hunter": {
-        "name": "瓶颈猎手",
-        "prompt": """对股票 {code}（{name}）进行"卡脖子"技术评估。
-
-请评估：
-- 是否拥有核心技术壁垒
-- 产业链关键环节地位
-- 国产替代空间
-- 技术护城河深度
-
-输出格式：
-{{
-  "score": 0-100,
-  "judgment": "核心判断，30字以内",
-  "core_risk": "核心风险点"
-}}""",
-    },
-    "investment-checklist": {
-        "name": "投资清单",
-        "prompt": """对股票 {code}（{name}）进行强约束一票否决制清单校验。
-
-请评估：
-- 财务造假嫌疑（关联交易/应收账款异常）
-- 大股东高比例质押
-- 商誉过高风险
-- 持续经营能力
-
-输出格式：
-{{
-  "score": 0-100,
-  "judgment": "核心判断，30字以内",
-  "core_risk": "核心风险点"
-}}""",
-    },
-    "portfolio-review": {
-        "name": "组合回顾",
-        "prompt": """对股票 {code}（{name}）进行动态校准投资逻辑评估。
-
-请评估：
-- 当前持仓逻辑是否成立
-- 基本面是否发生偏离
-- 估值是否合理
-- 是否需要调仓
-
-输出格式：
-{{
-  "score": 0-100,
-  "judgment": "核心判断，30字以内",
-  "core_risk": "核心风险点"
-}}""",
-    },
-    "thesis-tracker": {
-        "name": "论文追踪",
-        "prompt": """对股票 {code}（{name}）进行投资逻辑偏离度追踪。
-
-请评估：
-- 买入逻辑是否仍然成立
-- 关键假设是否被打破
-- 偏离度评估
-- 重新评估建议
-
-输出格式：
-{{
-  "score": 0-100,
-  "judgment": "核心判断，30字以内",
-  "core_risk": "核心风险点"
-}}""",
-    },
-    "news-pulse": {
-        "name": "新闻脉搏",
-        "prompt": """对股票 {code}（{name}）进行实时情绪舆情分析。
-
-请评估：
-- 近期重大新闻影响
-- 社交媒体情绪倾向
-- 舆情噪音过滤
-- 价格波动归因
-
-输出格式：
-{{
-  "score": 0-100,
-  "judgment": "核心判断，30字以内",
-  "core_risk": "核心风险点"
-}}""",
-    },
-    "dyp-ask": {
-        "name": "段永平问答",
-        "prompt": """对股票 {code}（{name}）进行段永平投资框架评估。
-
-请用"买股票就是买公司"的思维评估：
-- 生意模式是否简单易懂
-- 企业文化是否优秀
-- 管理层是否靠谱
-- 价格合理否
-
-输出格式：
-{{
-  "score": 0-100,
-  "judgment": "核心判断，30字以内",
-  "core_risk": "核心风险点"
-}}""",
-    },
-    "financial-data": {
-        "name": "财务数据",
-        "prompt": """对股票 {code}（{name}）进行数据驱动的财务分析。
-
-请评估：
-- 三张表核心数据质量
-- 关键财务比率趋势
-- 数据交叉验证结果
-- 异常数据点标注
-
-输出格式：
-{{
-  "score": 0-100,
-  "judgment": "核心判断，30字以内",
-  "core_risk": "核心风险点"
-}}""",
-    },
-    "wechat-article": {
-        "name": "微信公众号",
-        "prompt": """对股票 {code}（{name}）进行自媒体大V观点梳理。
-
-请评估：
-- 主流观点共识
-- 核心分歧点
-- 增量信息提取
-- 情绪温度计
-
-输出格式：
-{{
-  "score": 0-100,
-  "judgment": "核心判断，30字以内",
-  "core_risk": "核心风险点"
-}}""",
-    },
-    "investment-memo-craft": {
-        "name": "投资备忘录",
-        "prompt": """对股票 {code}（{name}）生成标准化投资备忘录。
-
-请评估：
-- 投资 Thesis 是否清晰
-- 核心论点是否充分
-- 风险因素是否完整
-- 建议是否明确
-
-输出格式：
-{{
-  "score": 0-100,
-  "judgment": "核心判断，30字以内",
-  "core_risk": "核心风险点"
-}}""",
-    },
-}
 
 
 def call_skill_llm(stock_code: str, stock_name: str, skill_key: str) -> dict:

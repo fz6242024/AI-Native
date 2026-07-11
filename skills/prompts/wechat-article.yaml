@@ -1,0 +1,18 @@
+# Skill: 微信公众号
+key: wechat-article
+name: 微信公众号
+prompt: |
+  对股票 {code}（{name}）进行自媒体大V观点梳理。
+  
+  请评估：
+  - 主流观点共识
+  - 核心分歧点
+  - 增量信息提取
+  - 情绪温度计
+  
+  输出格式：
+  {
+    "score": 0-100,
+    "judgment": "核心判断，30字以内",
+    "core_risk": "核心风险点"
+  }

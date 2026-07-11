@@ -1,4 +1,4 @@
-﻿name: AlphaSift 主节点筛选
+name: AlphaSift 主节点筛选
 
 on:
   schedule:
@@ -80,7 +80,7 @@ jobs:
           echo "$LAST5_JSON"
 
           echo "--- 触发账户 B (zf6242206/AI-Native) ---"
-          PAYLOAD_B=$(jq -n --arg stocks "$FIRST5_JSON" '{"inputs":{"stocks":$stocks}}')
+          PAYLOAD_B=$(jq -n --arg stocks "$FIRST5_JSON" '{"inputs":{"stocks":$stocks},"ref":"master"}')
           HTTP_CODE_B=$(curl -s -o /dev/null -w "%{http_code}" \
             -X POST \
             -H "Accept: application/vnd.github.v3+json" \
@@ -95,7 +95,7 @@ jobs:
           fi
 
           echo "--- 触发账户 C (fz6242025/AI-Native) ---"
-          PAYLOAD_C=$(jq -n --arg stocks "$LAST5_JSON" '{"inputs":{"stocks":$stocks}}')
+          PAYLOAD_C=$(jq -n --arg stocks "$LAST5_JSON" '{"inputs":{"stocks":$stocks},"ref":"master"}')
           HTTP_CODE_C=$(curl -s -o /dev/null -w "%{http_code}" \
             -X POST \
             -H "Accept: application/vnd.github.v3+json" \
