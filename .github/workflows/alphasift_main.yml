@@ -1,4 +1,4 @@
-﻿name: AlphaSift 主节点筛选
+name: AlphaSift 主节点筛选
 
 on:
   schedule:
@@ -22,7 +22,6 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
       FEISHU_WEBHOOK_MAIN: ${{ secrets.FEISHU_WEBHOOK_MAIN }}
-      ALPHASIFT_PROJECT_PATH: ${{ secrets.ALPHASIFT_PROJECT_PATH }}
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -32,8 +31,10 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: 安装依赖
-        run: pip install -r requirements.txt
+      - name: 安装依赖 + AlphaSift
+        run: |
+          pip install -r requirements.txt
+          pip install git+https://github.com/ZhuLinsen/alphasift.git@main
 
       - name: 运行 AlphaSift 初选
         id: discovery
@@ -71,8 +72,8 @@ jobs:
           FIRST5="${{ steps.discovery.outputs.first5 }}"
           LAST5="${{ steps.discovery.outputs.last5 }}"
 
-          FIRST5_JSON=$(echo "$FIRST5" | tr ',' '\n' | jq -R . | jq -s .)
-          LAST5_JSON=$(echo "$LAST5" | tr ',' '\n' | jq -R . | jq -s .)
+          FIRST5_JSON=$(echo "$FIRST5" | tr "," "\n" | jq -R . | jq -s .)
+          LAST5_JSON=$(echo "$LAST5" | tr "," "\n" | jq -R . | jq -s .)
 
           echo "=== 前 5 支 -> 账户 B ==="
           echo "$FIRST5_JSON"
@@ -80,11 +81,12 @@ jobs:
           echo "$LAST5_JSON"
 
           echo "--- 触发账户 B (zf6242206/AI-Native) ---"
+          PAYLOAD_B=$(jq -n --argjson stocks $FIRST5_JSON '{"inputs":{"stocks":$stocks},"ref":"master"}')
           HTTP_CODE_B=$(curl -s -o /dev/null -w "%{http_code}" \
             -X POST \
             -H "Accept: application/vnd.github.v3+json" \
             -H "Authorization: token $GH_PAT_ACCOUNT_B" \
-            -d "{\"inputs\":{\"stocks\":\"$FIRST5_JSON\"}}" \
+            -d "$PAYLOAD_B" \
             "https://api.github.com/repos/zf6242206/AI-Native/actions/workflows/skills_runner.yml/dispatches" || echo "000")
 
           if [ "$HTTP_CODE_B" != "204" ] && [ "$HTTP_CODE_B" != "201" ]; then
@@ -94,11 +96,12 @@ jobs:
           fi
 
           echo "--- 触发账户 C (fz6242025/AI-Native) ---"
+          PAYLOAD_C=$(jq -n --argjson stocks $LAST5_JSON '{"inputs":{"stocks":$stocks},"ref":"master"}')
           HTTP_CODE_C=$(curl -s -o /dev/null -w "%{http_code}" \
             -X POST \
             -H "Accept: application/vnd.github.v3+json" \
             -H "Authorization: token $GH_PAT_ACCOUNT_C" \
-            -d "{\"inputs\":{\"stocks\":\"$LAST5_JSON\"}}" \
+            -d "$PAYLOAD_C" \
             "https://api.github.com/repos/fz6242025/AI-Native/actions/workflows/skills_runner.yml/dispatches" || echo "000")
 
           if [ "$HTTP_CODE_C" != "204" ] && [ "$HTTP_CODE_C" != "201" ]; then
