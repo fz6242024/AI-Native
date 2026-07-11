@@ -142,7 +142,7 @@ def _generate_mock_stocks(count: int = 10) -> list:
     return [{"code": item["code"], "name": item["name"], "score": 0} for item in selected]
 
 
-def discover_stocks(output_file: str, strategy: str = None, use_llm: bool = True) -> None:
+def discover_stocks(output_file: str, strategy: str = None, use_llm: bool = True, stock_filter: str = None):
     """执行初选并输出结果。"""
     log.info("=" * 60)
     log.info("AlphaSift 初选开始  |  %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
@@ -174,6 +174,12 @@ def discover_stocks(output_file: str, strategy: str = None, use_llm: bool = True
         stocks = _generate_mock_stocks()
         log.info("使用模拟数据选出 %d 支股票", len(stocks))
 
+    # 如果指定了过滤条件，只保留这些股票
+    if stock_filter:
+        codes = [c.strip() for c in stock_filter.split(",")]
+        stocks = [s for s in stocks if s.get("code", "") in codes]
+        log.info("过滤条件: %s -> 保留 %d 支", stock_filter, len(stocks))
+    
     # 保存为 JSON
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(stocks, f, ensure_ascii=False, indent=2)
@@ -225,6 +231,11 @@ def main():
         "--no-llm",
         action="store_true",
         help="关闭 LLM 排名，仅使用 L1 因子筛选（更快）",
+    )
+    parser.add_argument(
+        "--filter",
+        default=None,
+        help="只筛选特定股票代码（逗号分隔），例如: 600519,000858",
     )
     args = parser.parse_args()
     discover_stocks(args.output, args.strategy, use_llm=not args.no_llm)
