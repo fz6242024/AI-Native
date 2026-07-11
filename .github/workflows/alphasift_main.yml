@@ -22,7 +22,6 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
       FEISHU_WEBHOOK_MAIN: ${{ secrets.FEISHU_WEBHOOK_MAIN }}
-      ALPHASIFT_PROJECT_PATH: ${{ secrets.ALPHASIFT_PROJECT_PATH }}
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -32,8 +31,10 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: 安装依赖
-        run: pip install -r requirements.txt
+      - name: 安装依赖 + AlphaSift
+        run: |
+          pip install -r requirements.txt
+          pip install git+https://github.com/ZhuLinsen/alphasift.git@main
 
       - name: 运行 AlphaSift 初选
         id: discovery
@@ -127,4 +128,3 @@ jobs:
             --last5 "$LAST5" \
             --trigger-code-b "$CODE_B" \
             --trigger-code-c "$CODE_C"
-
