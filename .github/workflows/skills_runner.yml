@@ -14,9 +14,12 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PYTHONIOENCODING: utf-8
+      # LLM 配置：优先使用 LLM_BASE_URL + LLM_API_KEY
+      # 如果没有，fallback 到 OPENAI_API_KEY
       LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
       LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      # 飞书配置
       FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
       FEISHU_WEBHOOK_MAIN: ${{ secrets.FEISHU_WEBHOOK_MAIN }}
     steps:
@@ -33,14 +36,22 @@ jobs:
 
       - name: 运行 Skills 深度评分
         id: evaluation
+        env:
+          STOCKS_INPUT: ${{ github.event.inputs.stocks }}
         run: |
-          STOCKS="${{ github.event.inputs.stocks }}"
           echo "=== 收到股票列表 ==="
-          echo "$STOCKS"
+          echo "$STOCKS_INPUT"
 
-          python scripts/run_skills_evaluation.py --stocks "$STOCKS"
+          echo "=== LLM 配置检查 ==="
+          echo "LLM_BASE_URL: ${LLM_BASE_URL:+已配置(已隐藏)}"
+          echo "LLM_API_KEY: ${LLM_API_KEY:+已配置(已隐藏)}"
+          echo "OPENAI_API_KEY: ${OPENAI_API_KEY:+已配置(已隐藏)}"
+          echo "FEISHU_WEBHOOK: ${FEISHU_WEBHOOK:+已配置(已隐藏)}"
+
+          python scripts/run_skills_evaluation.py --stocks "$STOCKS_INPUT"
 
           echo "=== 评分完成 ==="
+          echo "=== 结果文件内容 ==="
           cat analysis_result.json
 
       - name: 飞书推送评分结果

@@ -1,7 +1,8 @@
-﻿# ============================================================
+# ============================================================
 # run_skills_evaluation.py
 # Skills 深度评估脚本：通过 LLM API 调用 19 个投研 Skills
 # 每个 Skill 对应一个研究框架 prompt，调用 LLM 生成结构化评估
+# 最终整合生成每支股票的详细分析报告
 # ============================================================
 
 import argparse
@@ -35,37 +36,45 @@ log = logging.getLogger(__name__)
 log.info(log_debug_msg)
 
 # ---------- 从 .env 读取 LLM 配置 ----------
-LLM_BASE_URL = os.environ.get("LLM_BASE_URL") or os.environ.get("OPENAI_BASE_URL", "")
-LLM_API_KEY = os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
-FEISHU_WEBHOOK = os.environ.get("FEISHU_WEBHOOK", "")
-
-# 支持 LLM_CHANNELS / my_proxy 渠道
+# 优先检查 LLM_CHANNELS 渠道配置
 LLM_CHANNELS = os.environ.get("LLM_CHANNELS", "")
+LLM_BASE_URL = ""
+LLM_API_KEY = ""
+LLM_MODEL = "openai/agnes-2.0-flash"
+
 if LLM_CHANNELS:
     channel = LLM_CHANNELS.split(",")[0].strip()
     base_url_var = f"LLM_{channel.upper()}_BASE_URL"
     api_key_var = f"LLM_{channel.upper()}_API_KEY"
     models_var = f"LLM_{channel.upper()}_MODELS"
     
-    if not LLM_BASE_URL:
-        LLM_BASE_URL = os.environ.get(base_url_var, "")
-    if not LLM_API_KEY:
-        LLM_API_KEY = os.environ.get(api_key_var, "")
+    LLM_BASE_URL = os.environ.get(base_url_var, "")
+    LLM_API_KEY = os.environ.get(api_key_var, "")
     if os.environ.get(models_var):
         LLM_MODEL = os.environ.get(models_var).split(",")[0].strip()
-    else:
-        LLM_MODEL = "openai/agnes-2.0-flash"
 else:
-    LLM_MODEL = os.environ.get("LITELLM_MODEL", "openai/agnes-2.0-flash")
-
-if not LLM_BASE_URL:
+    # 检查 LLM_MY_PROXY_* 渠道
     proxy_base = os.environ.get("LLM_MY_PROXY_BASE_URL", "")
     if proxy_base:
         LLM_BASE_URL = proxy_base
-        LLM_API_KEY = os.environ.get("LLM_MY_PROXY_API_KEY", LLM_API_KEY)
-        LLM_MODEL = os.environ.get("LLM_MY_PROXY_MODELS", LLM_MODEL)
-    else:
-        LLM_BASE_URL = "https://api.openai.com/v1"
+        LLM_API_KEY = os.environ.get("LLM_MY_PROXY_API_KEY", "")
+        LLM_MODEL = os.environ.get("LLM_MY_PROXY_MODELS", "openai/agnes-2.0-flash")
+    
+    # 其次检查 LLM_BASE_URL / LLM_API_KEY
+    if not LLM_BASE_URL:
+        LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "")
+    if not LLM_API_KEY:
+        LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
+    
+    # 最后 fallback 到 OPENAI_*
+    if not LLM_API_KEY:
+        LLM_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+    if not LLM_BASE_URL:
+        LLM_BASE_URL = os.environ.get("LLM_BASE_URL") or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    
+    LLM_MODEL = os.environ.get("LITELLM_MODEL", LLM_MODEL)
+
+FEISHU_WEBHOOK = os.environ.get("FEISHU_WEBHOOK", "")
 
 log.info("LLM 配置: BASE_URL=%s, MODEL=%s", LLM_BASE_URL, LLM_MODEL)
 
@@ -114,7 +123,6 @@ def load_skills_config():
 
 
 SKILLS_CONFIG = load_skills_config()
-
 
 
 def call_skill_llm(stock_code: str, stock_name: str, skill_key: str) -> dict:
@@ -170,6 +178,137 @@ def call_skill_llm(stock_code: str, stock_name: str, skill_key: str) -> dict:
         }
 
 
+def generate_detailed_report(stock_code: str, stock_name: str, skill_results: list) -> dict:
+    """用一次 LLM 调用整合 19 个 Skill 的结果，生成详细分析报告。"""
+    # 构建技能结果摘要
+    summary_parts = []
+    for r in skill_results:
+        status = "OK" if r["score"] != 50 or "调用失败" not in r.get("judgment", "") else "FAILED"
+        summary_parts.append(
+            f"- {r['skill_name']}: {r['score']}分 | {r['judgment']} | 风险: {r['core_risk']} [{status}]"
+        )
+    skills_summary = "\n".join(summary_parts)
+    successful_count = sum(1 for r in skill_results if r["score"] != 50 or "调用失败" not in r.get("judgment", ""))
+    
+    prompt = f"""请根据以下 19 个投研 Skill 的评估结果，为 {stock_name}（{stock_code}）生成一份详细的投资分析报告。
+
+可用的 Skill 结果（共 {len(skill_results)} 个，{successful_count} 个成功）：
+{skills_summary}
+
+请生成一份结构化的投资分析报告，包含以下章节：
+
+## 一、公司概况与投资摘要
+- 公司基本信息
+- 综合评分（加权平均）
+- 一句话投资建议
+
+## 二、核心竞争力分析
+- 护城河类型与深度
+- 行业地位
+- 技术/品牌/成本优势
+
+## 三、财务健康度
+- 盈利能力（ROE/毛利率趋势）
+- 现金流质量
+- 资产负债结构
+
+## 四、行业与政策环境
+- 行业生命周期
+- 政策导向
+- 竞争格局
+
+## 五、管理层与公司治理
+- 管理层评价
+- 股权结构
+- 激励机制
+
+## 六、风险提示
+- 核心风险点（按严重程度排序）
+- 黑天鹅预警
+
+## 七、估值与操作建议
+- 当前估值水平
+- 目标价位区间
+- 买入/持有/卖出建议
+
+## 八、各 Skill 评估详情
+- 列出所有 19 个 Skill 的评分和简要说明
+
+输出格式为 JSON：
+{{
+    "stock_code": "{stock_code}",
+    "stock_name": "{stock_name}",
+    "overall_score": 0-100,
+    "recommendation": "买入/增持/持有/减持/卖出",
+    "summary": "投资摘要，100字以内",
+    "sections": {{
+        "company_overview": "公司概况与投资摘要",
+        "core_competitiveness": "核心竞争力分析",
+        "financial_health": "财务健康度",
+        "industry_policy": "行业与政策环境",
+        "management_governance": "管理层与公司治理",
+        "risk_warnings": "风险提示",
+        "valuation_advice": "估值与操作建议",
+        "skill_details": "各 Skill 评估详情（JSON数组，每个元素包含 skill_name, score, judgment, core_risk）"
+    }},
+    "skill_scores": {{
+        "avg_score": 平均分,
+        "highest_score": {{"skill": "名称", "score": 分数}},
+        "lowest_score": {{"skill": "名称", "score": 分数}},
+        "failed_count": 失败数量
+    }}
+}}
+
+注意：
+1. 如果某些 Skill 调用失败（标记为 FAILED），请在报告中注明
+2. 综合评分基于成功 Skill 的平均分
+3. 报告要专业、客观，基于数据说话
+4. 不要编造不存在的数据"""
+
+    try:
+        from openai import OpenAI
+        
+        client = OpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
+        
+        response = client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=[
+                {"role": "system", "content": "你是一位资深A股投研分析师，擅长撰写专业的投资研究报告。"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+            max_tokens=4000,
+        )
+        
+        content = response.choices[0].message.content.strip()
+        
+        # 提取 JSON
+        if "```json" in content:
+            content = content.split("```json")[1].split("```")[0].strip()
+        elif "```" in content:
+            content = content.split("```")[1].split("```")[0].strip()
+        
+        report = json.loads(content)
+        return report
+        
+    except Exception as e:
+        log.error("生成详细报告失败: %s", e)
+        return {
+            "stock_code": stock_code,
+            "stock_name": stock_name,
+            "overall_score": 50,
+            "recommendation": "数据不足，无法评估",
+            "summary": f"详细报告生成失败: {str(e)[:100]}",
+            "sections": {},
+            "skill_scores": {
+                "avg_score": 50,
+                "highest_score": None,
+                "lowest_score": None,
+                "failed_count": len(skill_results) - successful_count
+            }
+        }
+
+
 def evaluate_single_stock(stock_code: str) -> dict:
     """对单支股票运行全部 19 个 Skills。"""
     stock_name = STOCK_NAME_MAP.get(stock_code, stock_code)
@@ -187,17 +326,21 @@ def evaluate_single_stock(stock_code: str) -> dict:
         skill_results.append(result)
         total_score += result["score"]
         
-        if result["score"] == 50 and "调用失败" in result["judgment"]:
+        if result["score"] == 50 and "调用失败" in result.get("judgment", ""):
             failed_count += 1
         
         # 每次调用间隔 2 秒，避免触发频率限制
         time.sleep(2)
     
-    avg_score = round(total_score / len(SKILLS_CONFIG))
+    avg_score = round(total_score / len(SKILLS_CONFIG)) if SKILLS_CONFIG else 50
     
     sorted_skills = sorted(skill_results, key=lambda x: x["score"], reverse=True)
     highlights = [f"{s['skill_name']}（{s['score']}分）" for s in sorted_skills[:3]]
     risks = list(set(s["core_risk"] for s in skill_results if s["core_risk"] != "LLM调用异常"))
+    
+    # ========== 新增：生成详细报告 ==========
+    log.info("  [%s] 开始生成详细分析报告...", stock_code)
+    detailed_report = generate_detailed_report(stock_code, stock_name, skill_results)
     
     return {
         "stock_code": stock_code,
@@ -207,6 +350,7 @@ def evaluate_single_stock(stock_code: str) -> dict:
         "highlights": highlights,
         "risks": risks,
         "llm_failed_count": failed_count,
+        "detailed_report": detailed_report,
     }
 
 
@@ -226,9 +370,10 @@ def run_evaluation(stocks: list) -> list:
     log.info("=" * 60)
     log.info("19 Skills 深度评估开始  |  %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     log.info("LLM 模型: %s", LLM_MODEL)
+    log.info("Skills 数量: %d", len(SKILLS_CONFIG))
     log.info("=" * 60)
     log.info("股票数量: %d, Skills: %d, 总调用: %d", len(stocks), len(SKILLS_CONFIG), len(stocks) * len(SKILLS_CONFIG))
-    log.info("预计耗时: 约 %d 分钟", len(stocks) * len(SKILLS_CONFIG) * 2 // 60 + 1)
+    log.info("预计耗时: 约 %d 分钟（含详细报告生成）", len(stocks) * (len(SKILLS_CONFIG) * 2 // 60 + 1) + len(stocks))
     log.info("")
     
     all_results = []
@@ -266,6 +411,7 @@ def main():
 注意:
   每支股票调用 19 次 LLM（每个 Skill 一次），每次间隔 2 秒。
   2 支股票共 38 次调用，预计耗时约 2 分钟。
+  完成后还会额外调用 1 次 LLM 生成详细分析报告。
         """,
     )
     parser.add_argument("--stocks", required=True, help="股票列表 JSON 字符串")

@@ -1,4 +1,4 @@
-﻿# ============================================================
+# ============================================================
 # feishu_notifier.py
 # 飞书推送脚本：将分析结果推送到飞书群聊
 # 环境变量从 .env 文件读取（兼容 LLM_CONFIG_GUIDE 变量名）
@@ -46,11 +46,10 @@ log.info("FEISHU_WEBHOOK_MAIN 已配置: %s", bool(FEISHU_WEBHOOK_MAIN))
 
 
 def build_card_message(results: list) -> dict:
-    """构建飞书富文本卡片消息。"""
+    """构建飞书富文本卡片消息，包含详细报告。"""
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     stock_count = len(results)
 
-    # 卡片主体配置
     card = {
         "msg_type": "interactive",
         "card": {
@@ -68,7 +67,7 @@ def build_card_message(results: list) -> dict:
 
     elements = card["card"]["elements"]
 
-    # 纯文本摘要块（放在最前面，满足关键词校验）
+    # 摘要块
     stock_codes = ", ".join(r["stock_code"] for r in results)
     elements.append({
         "tag": "div",
@@ -84,7 +83,9 @@ def build_card_message(results: list) -> dict:
         final_score = r["final_score"]
         highlights = r.get("highlights", [])
         risks = r.get("risks", [])
-
+        failed = r.get("llm_failed_count", 0)
+        
+        # 颜色标记
         if final_score >= 80:
             score_color = "green"
         elif final_score >= 70:
@@ -92,22 +93,64 @@ def build_card_message(results: list) -> dict:
         else:
             score_color = "red"
 
+        # 基础信息块
+        basic_content = (
+            f"**{stock_name}（{stock_code}）**\n"
+            f"综合评分：**{final_score}** 分 [{score_color}]\n"
+        )
+        if failed > 0:
+            basic_content += f"*（{failed} 个 Skill 调用失败）*\n"
+        basic_content += "\n**亮点 Skill：**\n" + "\n".join(f"- {h}" for h in highlights) + "\n"
+        basic_content += "\n**核心风险：**\n" + "\n".join(f"- {risk}" for risk in risks)
+
         elements.append({
             "tag": "div",
             "text": {
                 "tag": "lark_md",
-                "content": (
-                    f"**{stock_name}（{stock_code}）**\n"
-                    f"综合评分：**{final_score}** 分 [{score_color}]\n"
-                    f"\n"
-                    f"**亮点：**\n"
-                    + "\n".join(f"- {h}" for h in highlights) + "\n"
-                    f"\n"
-                    f"**风险：**\n"
-                    + "\n".join(f"- {risk}" for risk in risks)
-                ),
+                "content": basic_content,
             },
         })
+
+        # 详细报告块（如果有）
+        detailed = r.get("detailed_report")
+        if detailed and detailed.get("summary"):
+            report_content = "\n\n---\n\n"
+            report_content += f"**\U0001f4d8 详细分析报告 - {stock_name}**\n\n"
+            report_content += f"**投资建议：** {detailed.get('recommendation', 'N/A')}\n"
+            report_content += f"**综合评分：** {detailed.get('overall_score', 'N/A')}/100\n\n"
+            report_content += f"**摘要：** {detailed['summary']}\n\n"
+            
+            sections = detailed.get("sections", {})
+            for section_key in ["company_overview", "core_competitiveness", "financial_health", 
+                                "industry_policy", "management_governance", "risk_warnings", 
+                                "valuation_advice"]:
+                section_text = sections.get(section_key, "")
+                if section_text and section_text != "{}":
+                    # 截取前 500 字符避免超长
+                    display_text = str(section_text)[:500]
+                    report_content += f"**{section_key.replace("_", " ").title()}**\n{display_text}\n\n"
+            
+            # Skill 评分详情
+            skill_scores = detailed.get("skill_scores", {})
+            if skill_scores:
+                report_content += "**Skill 评分统计：**\n"
+                report_content += f"- 平均分: {skill_scores.get('avg_score', 'N/A')}\n"
+                highest = skill_scores.get("highest_score")
+                if highest:
+                    report_content += f"- 最高分: {highest.get('skill', '?')} ({highest.get('score', '?')}分)\n"
+                lowest = skill_scores.get("lowest_score")
+                if lowest:
+                    report_content += f"- 最低分: {lowest.get('skill', '?')} ({lowest.get('score', '?')}分)\n"
+                report_content += f"- 失败数: {skill_scores.get('failed_count', 0)}\n"
+            
+            elements.append({
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": report_content,
+                },
+            })
+
         elements.append({"tag": "hr"})
 
     elements.append({
