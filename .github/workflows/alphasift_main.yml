@@ -39,7 +39,7 @@ jobs:
       - name: 运行 AlphaSift 初选
         id: discovery
         run: |
-          FILTER='${{ github.event.inputs.stocks_filter }}'
+          FILTER="${{ github.event.inputs.stocks_filter }}"
           if [ -n "$FILTER" ]; then
             python scripts/alphasift_discovery.py --output top_10_stocks.json --filter "$FILTER"
           else
@@ -56,12 +56,12 @@ jobs:
           stocks = [s.get('code', s) if isinstance(s, dict) else s for s in data]
           print(','.join(stocks))
           ")
-          echo "stock_list=$STOCKS" >> $GITHUB_OUTPUT
+          echo "stock_list=${STOCKS}" >> $GITHUB_OUTPUT
 
           FIRST5=$(echo "$STOCKS" | cut -d',' -f1-5)
           LAST5=$(echo "$STOCKS" | cut -d',' -f6-10)
-          echo "first5=$FIRST5" >> $GITHUB_OUTPUT
-          echo "last5=$LAST5" >> $GITHUB_OUTPUT
+          echo "first5=${FIRST5}" >> $GITHUB_OUTPUT
+          echo "last5=${LAST5}" >> $GITHUB_OUTPUT
 
       - name: 拆分 Top 10 并通知从节点
         id: trigger-slaves
@@ -72,8 +72,18 @@ jobs:
           FIRST5="${{ steps.discovery.outputs.first5 }}"
           LAST5="${{ steps.discovery.outputs.last5 }}"
 
-          FIRST5_JSON=$(echo "$FIRST5" | tr "," "\n" | jq -R . | jq -s .)
-          LAST5_JSON=$(echo "$LAST5" | tr "," "\n" | jq -R . | jq -s .)
+          # 用 Python 生成 JSON 数组，避免 jq 解析换行符/空格问题
+          FIRST5_JSON=$(python -c "
+          import json, sys
+          items = [x.strip() for x in sys.argv[1].split(',') if x.strip()]
+          print(json.dumps(items))
+          " "$FIRST5")
+
+          LAST5_JSON=$(python -c "
+          import json, sys
+          items = [x.strip() for x in sys.argv[1].split(',') if x.strip()]
+          print(json.dumps(items))
+          " "$LAST5")
 
           echo "=== 前 5 支 -> 账户 B ==="
           echo "$FIRST5_JSON"
@@ -81,7 +91,7 @@ jobs:
           echo "$LAST5_JSON"
 
           echo "--- 触发账户 B (zf6242206/AI-Native) ---"
-          PAYLOAD_B=$(jq -n --argjson stocks $FIRST5_JSON '{"inputs":{"stocks":$stocks},"ref":"master"}')
+          PAYLOAD_B=$(echo '{"inputs":{"stocks":'"$FIRST5_JSON"',"ref":"master"}}')
           HTTP_CODE_B=$(curl -s -o /dev/null -w "%{http_code}" \
             -X POST \
             -H "Accept: application/vnd.github.v3+json" \
@@ -96,7 +106,7 @@ jobs:
           fi
 
           echo "--- 触发账户 C (fz6242025/AI-Native) ---"
-          PAYLOAD_C=$(jq -n --argjson stocks $LAST5_JSON '{"inputs":{"stocks":$stocks},"ref":"master"}')
+          PAYLOAD_C=$(echo '{"inputs":{"stocks":'"$LAST5_JSON"',"ref":"master"}}')
           HTTP_CODE_C=$(curl -s -o /dev/null -w "%{http_code}" \
             -X POST \
             -H "Accept: application/vnd.github.v3+json" \
@@ -110,8 +120,8 @@ jobs:
             echo "账户 C 触发成功"
           fi
 
-          echo "http_code_b=$HTTP_CODE_B" >> $GITHUB_OUTPUT
-          echo "http_code_c=$HTTP_CODE_C" >> $GITHUB_OUTPUT
+          echo "http_code_b=${HTTP_CODE_B}" >> $GITHUB_OUTPUT
+          echo "http_code_c=${HTTP_CODE_C}" >> $GITHUB_OUTPUT
 
       - name: 飞书通知主节点结果
         run: |
