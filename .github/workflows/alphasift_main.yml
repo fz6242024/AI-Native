@@ -72,58 +72,76 @@ jobs:
           FIRST5="${{ steps.discovery.outputs.first5 }}"
           LAST5="${{ steps.discovery.outputs.last5 }}"
 
-          # 用 Python 生成 JSON 数组字符串（从节点 workflow 需要字符串格式的 stocks input）
-          FIRST5_JSON_STR=$(python -c "
-          import json, sys
-          items = [x.strip() for x in sys.argv[1].split(',') if x.strip()]
-          print(json.dumps(items))
-          " "$FIRST5")
+          # 用 Python 生成 JSON 并直接 curl 触发从节点
+          python -c "
+          import json, sys, subprocess, urllib.request, urllib.error
 
-          LAST5_JSON_STR=$(python -c "
-          import json, sys
-          items = [x.strip() for x in sys.argv[1].split(',') if x.strip()]
-          print(json.dumps(items))
-          " "$LAST5")
+          first5_csv = sys.argv[1]
+          last5_csv = sys.argv[2]
+          pat_b = sys.argv[3]
+          pat_c = sys.argv[4]
 
-          echo "=== 前 5 支 -> 账户 B ==="
-          echo "$FIRST5_JSON_STR"
-          echo "=== 后 5 支 -> 账户 C ==="
-          echo "$LAST5_JSON_STR"
+          first_items = [x.strip() for x in first5_csv.split(',') if x.strip()]
+          last_items = [x.strip() for x in last5_csv.split(',') if x.strip()]
 
-          echo "--- 触发账户 B (zf6242206/AI-Native) ---"
-          PAYLOAD_B=$(printf '{"inputs":{"stocks":%s},"ref":"master"}' "$FIRST5_JSON_STR")
-          echo "PAYLOAD_B: $PAYLOAD_B"
-          HTTP_CODE_B=$(curl -s -o /dev/null -w "%{http_code}" \
-            -X POST \
-            -H "Accept: application/vnd.github.v3+json" \
-            -H "Authorization: token $GH_PAT_ACCOUNT_B" \
-            -d "$PAYLOAD_B" \
-            "https://api.github.com/repos/zf6242206/AI-Native/actions/workflows/skills_runner.yml/dispatches" || echo "000")
+          # stocks 值必须是字符串（workflow_dispatch inputs 的要求）
+          first_json_str = json.dumps(first_items)
+          last_json_str = json.dumps(last_items)
 
-          if [ "$HTTP_CODE_B" != "204" ] && [ "$HTTP_CODE_B" != "201" ]; then
-            echo "::warning::账户 B 触发失败，HTTP 状态码: $HTTP_CODE_B"
-          else
-            echo "账户 B 触发成功"
-          fi
+          print('=== 前 5 支 -> 账户 B ===')
+          print(first_json_str)
+          print('=== 后 5 支 -> 账户 C ===')
+          print(last_json_str)
 
-          echo "--- 触发账户 C (fz6242025/AI-Native) ---"
-          PAYLOAD_C=$(printf '{"inputs":{"stocks":%s},"ref":"master"}' "$LAST5_JSON_STR")
-          echo "PAYLOAD_C: $PAYLOAD_C"
-          HTTP_CODE_C=$(curl -s -o /dev/null -w "%{http_code}" \
-            -X POST \
-            -H "Accept: application/vnd.github.v3+json" \
-            -H "Authorization: token $GH_PAT_ACCOUNT_C" \
-            -d "$PAYLOAD_C" \
-            "https://api.github.com/repos/fz6242025/AI-Native/actions/workflows/skills_runner.yml/dispatches" || echo "000")
+          def trigger_workflow(pat, repo_url, payload):
+              data = json.dumps(payload).encode('utf-8')
+              req = urllib.request.Request(
+                  repo_url,
+                  data=data,
+                  headers={
+                      'Accept': 'application/vnd.github.v3+json',
+                      'Authorization': f'token {pat}',
+                      'Content-Type': 'application/json'
+                  },
+                  method='POST'
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as resp:
+                      return resp.status
+              except urllib.error.HTTPError as e:
+                  return e.code
 
-          if [ "$HTTP_CODE_C" != "204" ] && [ "$HTTP_CODE_C" != "201" ]; then
-            echo "::warning::账户 C 触发失败，HTTP 状态码: $HTTP_CODE_C"
-          else
-            echo "账户 C 触发成功"
-          fi
+          # 触发账户 B
+          payload_b = {'inputs': {'stocks': first_json_str}, 'ref': 'master'}
+          code_b = trigger_workflow(
+              pat_b,
+              'https://api.github.com/repos/zf6242206/AI-Native/actions/workflows/skills_runner.yml/dispatches',
+              payload_b
+          )
+          print(f'--- 触发账户 B ---')
+          if code_b in (201, 204):
+              print('账户 B 触发成功')
+          else:
+              print(f'账户 B 触发失败，HTTP 状态码: {code_b}')
 
-          echo "http_code_b=${HTTP_CODE_B}" >> $GITHUB_OUTPUT
-          echo "http_code_c=${HTTP_CODE_C}" >> $GITHUB_OUTPUT
+          # 触发账户 C
+          payload_c = {'inputs': {'stocks': last_json_str}, 'ref': 'master'}
+          code_c = trigger_workflow(
+              pat_c,
+              'https://api.github.com/repos/fz6242025/AI-Native/actions/workflows/skills_runner.yml/dispatches',
+              payload_c
+          )
+          print(f'--- 触发账户 C ---')
+          if code_c in (201, 204):
+              print('账户 C 触发成功')
+          else:
+              print(f'账户 C 触发失败，HTTP 状态码: {code_c}')
+
+          # 写入 GITHUB_OUTPUT
+          with open(sys.argv[5], 'a') as f:
+              f.write(f'http_code_b={code_b}\\n')
+              f.write(f'http_code_c={code_c}\\n')
+          " "$FIRST5" "$LAST5" "$GH_PAT_ACCOUNT_B" "$GH_PAT_ACCOUNT_C" "$GITHUB_OUTPUT"
 
       - name: 飞书通知主节点结果
         run: |
