@@ -1,12 +1,12 @@
-﻿name: AlphaSift Skills 深度评分
+name: AlphaSift Skills 深度评分
 
 on:
   workflow_dispatch:
     inputs:
       stocks:
-        description: '股票代码 JSON 数组，例如 ["600519","000858"]'
+        description: "股票代码 JSON 数组，例如 [\"600519\",\"000858\"]"
         required: true
-        default: '[]'
+        default: "[]"
 
 jobs:
   skills-evaluation:
@@ -14,9 +14,12 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PYTHONIOENCODING: utf-8
+      # LLM 配置：优先使用 LLM_BASE_URL + LLM_API_KEY
+      # 如果没有，fallback 到 OPENAI_API_KEY
       LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
       LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      # 飞书配置
       FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
       FEISHU_WEBHOOK_MAIN: ${{ secrets.FEISHU_WEBHOOK_MAIN }}
     steps:
@@ -26,21 +29,29 @@ jobs:
       - name: 设置 Python 3.10
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.10"
 
       - name: 安装依赖
         run: pip install -r requirements.txt
 
       - name: 运行 Skills 深度评分
         id: evaluation
+        env:
+          STOCKS_INPUT: ${{ github.event.inputs.stocks }}
         run: |
-          STOCKS='${{ github.event.inputs.stocks }}'
           echo "=== 收到股票列表 ==="
-          echo "$STOCKS"
+          echo "$STOCKS_INPUT"
 
-          python scripts/run_skills_evaluation.py --stocks "$STOCKS"
+          echo "=== LLM 配置检查 ==="
+          echo "LLM_BASE_URL: ${LLM_BASE_URL:+已配置(已隐藏)}"
+          echo "LLM_API_KEY: ${LLM_API_KEY:+已配置(已隐藏)}"
+          echo "OPENAI_API_KEY: ${OPENAI_API_KEY:+已配置(已隐藏)}"
+          echo "FEISHU_WEBHOOK: ${FEISHU_WEBHOOK:+已配置(已隐藏)}"
+
+          python scripts/run_skills_evaluation.py --stocks "$STOCKS_INPUT"
 
           echo "=== 评分完成 ==="
+          echo "=== 结果文件内容 ==="
           cat analysis_result.json
 
       - name: 飞书推送评分结果
