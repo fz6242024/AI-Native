@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-snapshot_collector.py — A股主板快照采集器（精简版）
-从东方财富拉取实时行情，保存为 JSON 文件
+snapshot_collector.py — A股主板快照采集器（云端版）
+从新浪财经拉取实时行情，保存为 JSON 文件
 支持增量对比和历史存档
 运行环境：GitHub Actions（Ubuntu）
 """
@@ -31,9 +31,9 @@ DIFF_FILE = DATA_DIR / "snapshot_diff.json"
 WATCHLIST_FILE = DATA_DIR / "watchlist.json"
 ARCHIVE_DIR = DATA_DIR / "archive"
 
-# 东方财富行情接口
-EM_HQ_URL = "https://push2.eastmoney.com/api/qt/ulist.np/get"
-EM_HEADERS = {"Referer": "https://quote.eastmoney.com"}
+# 新浪行情接口
+SINA_HQ_URL = "https://hq.sinajs.cn"
+SINA_HEADERS = {"Referer": "https://finance.sina.com.cn"}
 
 # 银行股黑名单（股票代码）
 KNOWN_BANK_CODES = {
@@ -48,15 +48,16 @@ KNOWN_BANK_CODES = {
 BANK_NAME_KEYWORDS = ["银行", "农商行", "农信社", "农村商业"]
 
 
-def _code_to_secid(code):
-    """将股票代码转换为东财 secid 格式（1.600519 / 0.000001）"""
-    return f"1.{code}" if code.startswith("6") else f"0.{code}"
+def _code_to_sina(code):
+    """将股票代码转换为新浪格式（sh600519 / sz000001）"""
+    prefix = "sz" if code.startswith(("0", "3")) else "sh"
+    return f"{prefix}{code}"
 
 
 def fetch_main_board_stocks():
     """
     拉取主板股票（深市000+沪市600），约2000支。
-    分批请求，每批200支。
+    分批请求，每批500支（新浪限制单请求500个code）。
     """
     all_stocks = []
     log.info("正在获取A股主板股票列表...")
@@ -74,51 +75,61 @@ def fetch_main_board_stocks():
     
     log.info("主板候选代码总数: %d", len(codes))
     
-    batch_size = 200
+    batch_size = 500
     total_fetched = 0
     
     for batch_start in range(0, len(codes), batch_size):
         batch_codes = codes[batch_start:batch_start + batch_size]
-        secids = [_code_to_secid(c) for c in batch_codes]
+        sina_codes = [_code_to_sina(c) for c in batch_codes]
         
-        params = {
-            "fields": "f1,f2,f3,f4,f12,f13,f14,f15,f16,f17,f18,f20,f21",
-            "secids": ",".join(secids),
-        }
-        
+        url = f"{SINA_HQ_URL}/?var=hq_str_{','.join(sina_codes)}"
         try:
-            r = requests.get(EM_HQ_URL, params=params, headers=EM_HEADERS, timeout=30)
-            data = r.json()
+            r = requests.get(url, headers=SINA_HEADERS, timeout=30)
+            r.encoding = "gbk"
             
-            if data.get("data") and data["data"].get("diff"):
-                for item in data["data"]["diff"]:
-                    code = item.get("f12", "")
-                    if not code:
-                        continue
-                    
-                    # 精简字段：只保留核心数据
-                    price = item.get("f2", 0) / 100.0 if item.get("f2") else 0
-                    prev_close = item.get("f20", 0) / 100.0 if item.get("f20") else 0
-                    
-                    stock = {
-                        "code": code,
-                        "name": item.get("f14", ""),
-                        "price": price,
-                        "change_pct": round((price - prev_close) / prev_close * 100, 2) if prev_close > 0 else 0.0,
-                        "volume": item.get("f4", 0),
-                        "is_bank": (code in KNOWN_BANK_CODES or 
-                                    any(kw in item.get("f14", "") for kw in BANK_NAME_KEYWORDS)),
-                        "timestamp": datetime.now().isoformat(),
-                    }
-                    
-                    all_stocks.append(stock)
-                    total_fetched += 1
+            for line in r.text.strip().split("\n"):
+                if "=" not in line:
+                    continue
+                var_part, data_part = line.split("=", 1)
+                symbol = var_part.split("_")[-1] if "_" in var_part else ""
                 
-                log.info("批次完成: %d/%d", total_fetched, len(codes))
-            else:
-                log.warning("批次 %d-%d 无数据", batch_start, batch_start + batch_size)
+                if '"' not in data_part:
+                    continue
+                data_part = data_part.split('"')[1].split('"')[0]
+                if not data_part:
+                    continue
+                
+                parts = data_part.split(",")
+                if len(parts) < 32:
+                    continue
+                
+                orig_code = symbol[2:]  # 去掉 sh/sz 前缀
+                
+                # 只保留主板代码
+                if not (orig_code.startswith("000") or orig_code.startswith("600") or 
+                        orig_code.startswith("601") or orig_code.startswith("603") or 
+                        orig_code.startswith("605")):
+                    continue
+                
+                price = float(parts[2]) if parts[2] else 0
+                prev = float(parts[2]) if parts[2] else 0
+                
+                stock = {
+                    "code": orig_code,
+                    "name": parts[0],
+                    "price": price,
+                    "change_pct": round((price - prev) / prev * 100, 2) if prev > 0 else 0.0,
+                    "volume": int(float(parts[8])) if parts[8] else 0,
+                    "is_bank": (orig_code in KNOWN_BANK_CODES or 
+                                any(kw in parts[0] for kw in BANK_NAME_KEYWORDS)),
+                    "timestamp": datetime.now().isoformat(),
+                }
+                
+                all_stocks.append(stock)
+                total_fetched += 1
             
-            time.sleep(0.2)
+            log.info("批次完成: %d/%d", total_fetched, len(codes))
+            time.sleep(0.3)
             
         except Exception as e:
             log.warning("批次请求失败 (%d-%d): %s", batch_start, batch_start + batch_size, e)
