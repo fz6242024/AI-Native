@@ -14,6 +14,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: 'true'
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -27,12 +29,9 @@ jobs:
         run: python scripts/snapshot_collector.py
 
       - name: Commit and push
-        env:
-          GH_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add data/
           git diff --cached --quiet || git commit -m "Daily snapshot: $(date +%Y-%m-%d)"
-          git remote set-url origin https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git
-          git push origin master
+          git push
