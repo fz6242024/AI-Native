@@ -163,6 +163,118 @@ def _generate_mock_stocks(count: int = 10) -> list:
 _cached_snapshot_path = None
 _cached_snapshot_df = None
 
+
+def _filter_stocks(stocks):
+    """过滤股票：去掉 ST、银行股、高价股。"""
+    if not stocks:
+        return stocks
+    import requests
+
+    # 1. 用新浪接口拉实时价格和名称
+    log.info("  正在获取实时行情数据...")
+    spot_map = {}  # code -> price
+    name_map = {}  # code -> name (from sina)
+    codes = [s["code"] for s in stocks]
+    
+    sina_codes = []
+    for c in codes:
+        prefix = "sz" if c.startswith(("0", "3")) else "sh"
+        sina_codes.append(f"{prefix}{c}")
+    
+    try:
+        url = "https://hq.sinajs.cn/list=" + ",".join(sina_codes)
+        headers = {"Referer": "https://finance.sina.com.cn"}
+        r = requests.get(url, headers=headers, timeout=15)
+        r.encoding = "gbk"
+        for line in r.text.strip().split("\n"):
+            if "=" not in line:
+                continue
+            var_part, data_part = line.split("=", 1)
+            symbol = var_part.split("_")[-1] if "_" in var_part else ""
+            if '"' in data_part:
+                data_part = data_part.split('"')[1].split('"')[0]
+            parts = data_part.split(",")
+            if len(parts) >= 2:
+                # 找到对应的原始代码
+                for c in codes:
+                    prefix = "sz" if c.startswith(("0", "3")) else "sh"
+                    if f"{prefix}{c}" == symbol:
+                        spot_map[c] = float(parts[2])  # 成交价
+                        name_map[c] = parts[0]  # 股票名称
+                        break
+        log.info("  新浪行情获取成功，覆盖 %d/%d 支股票", len(spot_map), len(codes))
+    except Exception as e:
+        log.warning("  新浪行情获取失败: %s，跳过价格过滤", e)
+
+    # 2. 行业分类：由于东方财富接口被代理拦截，改用名称判断 + 银行黑名单
+    log.info("  正在获取行业分类信息...")
+    industry_map = {}
+    # 已知银行股名称关键字（覆盖绝大多数银行）
+    BANK_NAME_KEYWORDS = [
+        "银行", "农商行", "农信社", "农村商业",
+    ]
+    # 常见银行股票代码白名单（防止名称判断遗漏）
+    KNOWN_BANK_CODES = {
+        "000001", "000002", "002142", "002807", "001289", "002966",  # 平安、招商、宁波、杭州、沪农商、长沙
+        "001339", "002936", "001267", "600908", "600919", "600926",   # 江苏银行等
+        "601002", "601009", "601128", "601166", "601216", "601229",   # 西部、南京、西安、浦发、中信、工行
+        "601328", "601398", "601577", "601588", "601658",   # 平安银行、邮储、建行、民生、周行
+        "601665", "601788", "601997", "601998",                      # 光大、沪农商、北京、青岛
+    }
+    for code in codes:
+        if code in KNOWN_BANK_CODES:
+            industry_map[code] = "银行"
+        else:
+            industry_map[code] = ""
+    log.info("  行业分类获取完成，覆盖 %d/%d 支股票", len(industry_map), len(codes))
+
+    # 3. 执行过滤
+    filtered = []
+    removed_reasons = []
+    BANK_KEYWORDS = ["银行", "商业银行"]
+
+    for s in stocks:
+        code = s["code"]
+        name = s.get("name", "")
+        # 用新浪返回的名称覆盖（更准确）
+        if code in name_map:
+            name = name_map[code]
+        score = s.get("score", 0)
+        reasons = []
+
+        # 规则1: ST 股
+        if "ST" in name.upper() or name.startswith("*ST") or name.startswith("ST"):
+            reasons.append("ST股")
+
+        # 规则2: 银行股
+        ind = industry_map.get(code, "")
+        if any(kw in ind for kw in BANK_KEYWORDS):
+            reasons.append("银行股")
+
+        # 规则3: 股价 > 100（高评分可豁免）
+        price = spot_map.get(code)
+        if price and price > 100:
+            if score >= 0.85:
+                reasons.append(f"高价({price:.2f}元)但高分豁免")
+            else:
+                reasons.append(f"高价({price:.2f}元)")
+
+        if reasons:
+            joined = ", ".join(reasons)
+            removed_reasons.append(f"  移除 {name}({code}): {joined}")
+        else:
+            filtered.append(s)
+
+    if removed_reasons:
+        log.info("  过滤详情:")
+        for r in removed_reasons:
+            log.info(r)
+
+    log.info("  过滤后: %d -> %d 支", len(stocks), len(filtered))
+    return filtered
+
+
+
 def _fetch_and_cache_snapshot(output_file: str):
     """预取快照并缓存到本地，供后续策略复用。"""
     global _cached_snapshot_path
@@ -301,7 +413,9 @@ def discover_stocks(output_file: str, strategy: str = None, use_llm: bool = True
         stocks = [s for s in stocks if s.get("code", "") in codes]
         log.info("过滤条件: %s -> 保留 %d 支", stock_filter, len(stocks))
     
-    # 保存为 JSON (include all fields including strategy)
+    stocks = _filter_stocks(stocks)
+
+        # 保存为 JSON (include all fields including strategy)
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(stocks, f, ensure_ascii=False, indent=2)
     log.info("结果已保存到: %s", output_file)
