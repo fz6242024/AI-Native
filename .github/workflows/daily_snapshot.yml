@@ -2,41 +2,36 @@ name: 每日A股快照采集
 
 on:
   schedule:
-    # 交易日收盘后运行（北京时间15:30 = UTC 07:30）
     - cron: '30 7 * * 1-5'
-  workflow_dispatch:  # 允许手动触发
+  workflow_dispatch:
 
 jobs:
   collect-snapshot:
     name: 采集A股快照
     runs-on: ubuntu-latest
-    
     env:
       PYTHONIOENCODING: utf-8
-      
     steps:
-      - name: 检出代码
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          persist-credentials: true
 
-      - name: 设置 Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: 安装依赖
-        run: |
-          pip install requests
+      - name: Install deps
+        run: pip install requests
 
-      - name: 运行快照采集
-        run: |
-          python scripts/snapshot_collector.py
+      - name: Collect snapshot
+        run: python scripts/snapshot_collector.py
 
-      - name: 提交快照数据
+      - name: Commit and push
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add data/
-          git diff --cached --quiet || git commit -m "📊 每日快照: $(date +%Y-%m-%d)"
+          git diff --cached --quiet || git commit -m "Daily snapshot: $(date +%Y-%m-%d)"
           git push
