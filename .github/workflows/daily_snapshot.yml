@@ -34,4 +34,5 @@ jobs:
           git config --local user.name "GitHub Action"
           git add data/
           git diff --cached --quiet || git commit -m "Daily snapshot: $(date +%Y-%m-%d)"
-          git push https://x-access-token:${{ secrets.DEPLOY_TOKEN }}@github.com/${{ github.repository }}.git
+          git remote set-url origin https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git
+          git push origin master
