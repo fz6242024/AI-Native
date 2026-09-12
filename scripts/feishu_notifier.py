@@ -128,8 +128,9 @@ def build_card_message(results: list) -> dict:
                 if section_text and section_text != "{}":
                     # 截取前 500 字符避免超长
                     display_text = str(section_text)[:500]
-                    report_content += f"**{section_key.replace("_", " ").title()}**\n{display_text}\n\n"
-            
+                    display_title = section_key.replace("_", " ").title()
+                    report_content += "**" + display_title + "**\n" + display_text + "\n\n"
+
             # Skill 评分详情
             skill_scores = detailed.get("skill_scores", {})
             if skill_scores:
