@@ -58,7 +58,7 @@ else:
     if proxy_base:
         LLM_BASE_URL = proxy_base
         LLM_API_KEY = os.environ.get("LLM_MY_PROXY_API_KEY", "")
-        LLM_MODEL = os.environ.get("LLM_MY_PROXY_MODELS", "openai/agnes-2.0-flash")
+        LLM_MODEL = os.environ.get("LLM_MY_PROXY_MODELS", "openai/agnes-3.0-flash")
     
     # 其次检查 LLM_BASE_URL / LLM_API_KEY
     if not LLM_BASE_URL:
