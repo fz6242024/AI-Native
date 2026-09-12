@@ -178,6 +178,118 @@ def call_skill_llm(stock_code: str, stock_name: str, skill_key: str) -> dict:
         }
 
 
+def call_all_skills_llm(stock_code: str, stock_name: str) -> list:
+    """一次 LLM 请求评估全部 19 个 Skills，返回与 call_skill_llm 兼容的结果列表。
+
+    Free tier 优化：将 19 次独立请求合并为 1 次，大幅降低 Rate Limit 触发概率。
+    输出 token 配额设计（agnes-2.0-flash Free tier）：
+      - 单 Skill judgment  ≤ 80 字（约 120 token）
+      - 单 Skill core_risk ≤ 40 字（约 60 token）
+      - 19 Skill 合计     ≤ 3,800 token
+      - max_tokens 设为 4096，留有余量
+    失败时返回空列表，调用方 fallback 到 19 次单独调用。
+    """
+    skill_names = [cfg["name"] for cfg in SKILLS_CONFIG.values()]
+    skill_keys = list(SKILLS_CONFIG.keys())
+
+    # 构建每个 Skill 的独立 prompt（替换模板变量）
+    skill_prompts = []
+    for key in skill_keys:
+        cfg = SKILLS_CONFIG[key]
+        prompt_text = cfg["prompt"].format(code=stock_code, name=stock_name)
+        skill_prompts.append((key, cfg["name"], prompt_text))
+
+    # 拼接所有 Skill 的 prompt，并明确要求 LLM 输出 JSON 数组
+    sections = []
+    for idx, (key, name, prompt_text) in enumerate(skill_prompts, 1):
+        sections.append(f"--- Skill {idx}: {name} (key: {key}) ---\n{prompt_text}")
+    all_prompts = "\n\n".join(sections)
+
+    output_format = """请对以上每个 Skill 分别输出评估结果，格式为 JSON 数组，每个元素结构如下：
+[
+  {
+    "skill_key": "key值",
+    "skill_name": "Skill名称",
+    "score": 0-100的整数,
+    "judgment": "80字以内的判断说明",
+    "core_risk": "40字以内的核心风险"
+  }
+]
+严格输出 JSON 数组，不要输出任何其他文字。"""
+
+    full_prompt = f"""股票信息：{stock_name}（{stock_code}）
+
+请依次评估以下 {len(skill_prompts)} 个投研 Skill，每个 Skill 有独立的研究框架 prompt：
+
+{all_prompts}
+
+{output_format}"""
+
+    try:
+        from openai import OpenAI
+        client = OpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
+
+        response = client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=[
+                {"role": "system", "content": "你是专业的A股投研分析师。对每个 Skill 独立评估，严格按 JSON 数组格式输出，不要输出其他内容。"},
+                {"role": "user", "content": full_prompt},
+            ],
+            temperature=0.3,
+            max_tokens=4096,
+        )
+
+        raw = response.choices[0].message.content.strip()
+
+        # 提取 JSON 数组
+        if "```json" in raw:
+            raw = raw.split("```json")[1].split("```")[0].strip()
+        elif "```" in raw:
+            raw = raw.split("```")[1].split("```")[0].strip()
+
+        results = json.loads(raw)
+        if not isinstance(results, list):
+            raise ValueError(f"LLM 返回的不是数组: {type(results)}")
+
+        # 验证并补全每个元素
+        valid_results = []
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            key = item.get("skill_key", "")
+            if key not in SKILLS_CONFIG:
+                continue
+            valid_results.append({
+                "stock_code": stock_code,
+                "skill_executed": key,
+                "skill_name": item.get("skill_name", SKILLS_CONFIG[key]["name"]),
+                "score": int(item.get("score", 50)),
+                "judgment": item.get("judgment", "暂无评估"),
+                "core_risk": item.get("core_risk", "暂无风险"),
+            })
+
+        log.info("合并调用成功：返回 %d/%d 个 Skill 结果", len(valid_results), len(skill_keys))
+
+        # 如果 LLM 漏掉了某些 Skill，用默认值补全
+        returned_keys = {r["skill_executed"] for r in valid_results}
+        for key in skill_keys:
+            if key not in returned_keys:
+                valid_results.append({
+                    "stock_code": stock_code,
+                    "skill_executed": key,
+                    "skill_name": SKILLS_CONFIG[key]["name"],
+                    "score": 50,
+                    "judgment": "LLM 未返回该 Skill 结果",
+                    "core_risk": "LLM调用异常",
+                })
+
+        return valid_results
+
+    except Exception as e:
+        log.warning("合并调用失败，将 fallback 到 19 次单独调用: %s", e)
+        return []
+
+
 def generate_detailed_report(stock_code: str, stock_name: str, skill_results: list) -> dict:
     """用一次 LLM 调用整合 19 个 Skill 的结果，生成详细分析报告。"""
     # 构建技能结果摘要
@@ -310,28 +422,40 @@ def generate_detailed_report(stock_code: str, stock_name: str, skill_results: li
 
 
 def evaluate_single_stock(stock_code: str) -> dict:
-    """对单支股票运行全部 19 个 Skills。"""
+    """对单支股票运行全部 19 个 Skills（优先合并调用，失败时 fallback）。"""
     stock_name = STOCK_NAME_MAP.get(stock_code, stock_code)
     log.info("  [%s] %s 开始评估 19 个 Skills...", stock_code, stock_name)
-    
+
     skill_results = []
     total_score = 0
     failed_count = 0
-    
-    for idx, (key, config) in enumerate(SKILLS_CONFIG.items(), 1):
-        skill_name = config["name"]
-        log.info("    [%d/%d] %s...", idx, len(SKILLS_CONFIG), skill_name)
-        
-        result = call_skill_llm(stock_code, stock_name, key)
-        skill_results.append(result)
-        total_score += result["score"]
-        
-        if result["score"] == 50 and "调用失败" in result.get("judgment", ""):
-            failed_count += 1
-        
-        # 每次调用间隔 2 秒，避免触发频率限制
-        time.sleep(2)
-    
+
+    # 优先尝试合并调用（1 次 LLM 请求评估全部 19 个 Skill）
+    skill_results = call_all_skills_llm(stock_code, stock_name)
+
+    if skill_results:
+        log.info("  [%s] 合并调用成功，共 %d 个 Skill 结果", stock_code, len(skill_results))
+        total_score = sum(r["score"] for r in skill_results)
+        failed_count = sum(
+            1 for r in skill_results
+            if r["score"] == 50 and "调用失败" in r.get("judgment", "")
+        )
+    else:
+        # fallback：19 次单独调用（间隔 5 秒，降低 Rate Limit 触发概率）
+        log.info("  [%s] 合并调用失败，fallback 到 19 次单独调用...", stock_code)
+        for idx, (key, config) in enumerate(SKILLS_CONFIG.items(), 1):
+            skill_name = config["name"]
+            log.info("    [%d/%d] %s...", idx, len(SKILLS_CONFIG), skill_name)
+
+            result = call_skill_llm(stock_code, stock_name, key)
+            skill_results.append(result)
+            total_score += result["score"]
+
+            if result["score"] == 50 and "调用失败" in result.get("judgment", ""):
+                failed_count += 1
+
+            time.sleep(5)
+
     avg_score = round(total_score / len(SKILLS_CONFIG)) if SKILLS_CONFIG else 50
     
     sorted_skills = sorted(skill_results, key=lambda x: x["score"], reverse=True)
@@ -372,8 +496,8 @@ def run_evaluation(stocks: list) -> list:
     log.info("LLM 模型: %s", LLM_MODEL)
     log.info("Skills 数量: %d", len(SKILLS_CONFIG))
     log.info("=" * 60)
-    log.info("股票数量: %d, Skills: %d, 总调用: %d", len(stocks), len(SKILLS_CONFIG), len(stocks) * len(SKILLS_CONFIG))
-    log.info("预计耗时: 约 %d 分钟（含详细报告生成）", len(stocks) * (len(SKILLS_CONFIG) * 2 // 60 + 1) + len(stocks))
+    log.info("股票数量: %d, Skills: %d, 总调用: 约 %d 次（合并优先）", len(stocks), len(SKILLS_CONFIG), len(stocks) * 2)
+    log.info("预计耗时: 约 %d 分钟（合并调用 + 详细报告）", len(stocks) * 2)
     log.info("")
     
     all_results = []
