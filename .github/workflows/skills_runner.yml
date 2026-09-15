@@ -18,6 +18,7 @@ jobs:
       # 如果没有，fallback 到 OPENAI_API_KEY
       LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
       LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+      LLM_MODEL: ${{ secrets.LLM_MODEL }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       # 飞书配置
       FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}

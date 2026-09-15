@@ -19,6 +19,7 @@ jobs:
       PYTHONIOENCODING: utf-8
       LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
       LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+      LLM_MODEL: ${{ secrets.LLM_MODEL }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
       FEISHU_WEBHOOK_MAIN: ${{ secrets.FEISHU_WEBHOOK_MAIN }}

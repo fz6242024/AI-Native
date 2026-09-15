@@ -40,7 +40,7 @@ log.info(log_debug_msg)
 LLM_CHANNELS = os.environ.get("LLM_CHANNELS", "")
 LLM_BASE_URL = ""
 LLM_API_KEY = ""
-LLM_MODEL = "openai/agnes-2.0-flash"
+LLM_MODEL = "agnes-3.0-flash"
 
 if LLM_CHANNELS:
     channel = LLM_CHANNELS.split(",")[0].strip()
@@ -58,7 +58,7 @@ else:
     if proxy_base:
         LLM_BASE_URL = proxy_base
         LLM_API_KEY = os.environ.get("LLM_MY_PROXY_API_KEY", "")
-        LLM_MODEL = os.environ.get("LLM_MY_PROXY_MODELS", "openai/agnes-3.0-flash")
+        LLM_MODEL = os.environ.get("LLM_MY_PROXY_MODELS", "agnes-3.0-flash")
     
     # 其次检查 LLM_BASE_URL / LLM_API_KEY
     if not LLM_BASE_URL:
@@ -73,6 +73,10 @@ else:
         LLM_BASE_URL = os.environ.get("LLM_BASE_URL") or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
     
     LLM_MODEL = os.environ.get("LITELLM_MODEL", LLM_MODEL)
+    # 模型名允许通过环境变量 LLM_MODEL 覆盖（空值回退默认）
+    _env_model = os.environ.get("LLM_MODEL", "").strip()
+    if _env_model:
+        LLM_MODEL = _env_model
 
 FEISHU_WEBHOOK = os.environ.get("FEISHU_WEBHOOK", "")
 
