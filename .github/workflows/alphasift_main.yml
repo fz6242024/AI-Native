@@ -1,5 +1,8 @@
 name: AlphaSift 主节点筛选
 
+permissions:
+  contents: write
+
 on:
   schedule:
     - cron: '0 1 * * 1-5'
@@ -17,6 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PYTHONIOENCODING: utf-8
+      ALPHASIFT_USE_LOCAL_SNAPSHOT: "1"
       LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
       LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
       LLM_MODEL: ${{ secrets.LLM_MODEL }}
@@ -143,6 +147,25 @@ jobs:
               f.write(f'http_code_b={code_b}\\n')
               f.write(f'http_code_c={code_c}\\n')
           " "$FIRST5" "$LAST5" "$GH_PAT_ACCOUNT_B" "$GH_PAT_ACCOUNT_C" "$GITHUB_OUTPUT"
+
+      - name: 收集 B/C 账户评分结果
+        env:
+          GH_PAT_ACCOUNT_B: ${{ secrets.GH_PAT_ACCOUNT_B }}
+          GH_PAT_ACCOUNT_C: ${{ secrets.GH_PAT_ACCOUNT_C }}
+        run: |
+          python scripts/collect_skill_scores.py \
+            --repo-b "zf6242206/AI-Native" \
+            --repo-c "fz6242025/AI-Native" \
+            --pat-b "$GH_PAT_ACCOUNT_B" \
+            --pat-c "$GH_PAT_ACCOUNT_C"
+
+      - name: 提交评分历史
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add data/skill_history/
+          git diff --cached --quiet || git commit -m "Skill history: $(date +%Y-%m-%d)"
+          git push
 
       - name: 飞书通知主节点结果
         run: |

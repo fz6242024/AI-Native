@@ -19,11 +19,33 @@ ARCHIVE_DIR = DATA_DIR / "archive"
 TENCENT_URL = "https://qt.gtimg.cn/q="
 TENCENT_REF = {"Referer": "https://stockapp.finance.qq.com"}
 
-KNOWN_BANK_CODES = {"000001","000002","002142","002807","001289","002966","001339","002936","001267","600908","600919","600926","601002","601009","601128","601166","601216","601229","601328","601336","601377","601456","601566","601577","601588","601601","601658","601665","601688","601766","601816","601838","601939","601988","601997","601998"}
+KNOWN_BANK_CODES = {
+    "000001", "002142", "002807", "002839", "002936", "002948", "002966", "002958",
+    "001227", "001289",
+    "600000", "600015", "600016", "600036", "600908", "600919", "600926", "600928",
+    "601009", "601128", "601166", "601169", "601229", "601288", "601328", "601398",
+    "601528", "601577", "601658", "601665", "601818", "601838", "601860", "601916",
+    "601939", "601963", "601988", "601997", "601998",
+}
 BANK_KW = ["银行", "农商行", "农信社", "农村商业"]
 
 def _tcc(code):
     return ("sz" if code.startswith(("0","3")) else "sh") + code
+
+def _f(parts, idx):
+    """安全取腾讯行情字段为浮点数（缺失/空返回 0）。"""
+    try:
+        v = parts[idx].strip()
+        return float(v) if v else 0.0
+    except (IndexError, ValueError):
+        return 0.0
+
+def _is_bank(code, name):
+    """银行判断：优先代码白名单，其次剥掉 XD/XR/DR 前缀后按名称关键字判断。"""
+    if code in KNOWN_BANK_CODES:
+        return True
+    nm = name.replace("XD", "").replace("XR", "").replace("DR", "").replace("*ST", "")
+    return any(kw in nm for kw in BANK_KW)
 
 def fetch_main_board_stocks():
     all_stocks = []
@@ -49,9 +71,25 @@ def fetch_main_board_stocks():
                 code = p[2]
                 if not code: continue
                 if not (code.startswith("000") or code.startswith("600") or code.startswith("601") or code.startswith("603") or code.startswith("605")): continue
-                price = float(p[3]) if p[3] else 0
-                prev = float(p[4]) if p[4] else 0
-                all_stocks.append({"code": code, "name": p[1], "price": price, "change_pct": round((price-prev)/prev*100, 2) if prev > 0 else 0.0, "volume": int(float(p[6])) if p[6] else 0, "is_bank": (code in KNOWN_BANK_CODES or any(kw in p[1] for kw in BANK_KW)), "timestamp": datetime.now().isoformat()})
+                price = _f(p, 3)
+                # 腾讯接口字段位置：3价格 32涨跌幅 36成交量(手) 37成交额(万)
+                # 38换手率 39市盈率 44流通市值(亿) 45总市值(亿) 46市净率 49量比
+                all_stocks.append({
+                    "code": code,
+                    "name": p[1],
+                    "price": price,
+                    "change_pct": _f(p, 32),
+                    "volume": int(_f(p, 36)),
+                    "amount": _f(p, 37) * 10000.0,      # 万元 -> 元
+                    "turnover_rate": _f(p, 38),
+                    "pe_ratio": _f(p, 39) or 0.0,
+                    "circ_mv": _f(p, 44) * 1e8,          # 亿元 -> 元
+                    "total_mv": _f(p, 45) * 1e8,         # 亿元 -> 元
+                    "pb_ratio": _f(p, 46) or 0.0,
+                    "volume_ratio": _f(p, 49) or 1.0,    # 量比缺失按 1 处理
+                    "is_bank": _is_bank(code, p[1]),
+                    "timestamp": datetime.now().isoformat(),
+                })
                 total_fetched += 1
             log.info("批次完成: %d/%d", total_fetched, len(codes))
             time.sleep(0.5)

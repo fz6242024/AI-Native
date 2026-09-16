@@ -527,6 +527,39 @@ def save_results(results: list, output_file: str) -> None:
         json.dump(results, f, ensure_ascii=False, indent=2)
     log.info("结果已保存到: %s", output_file)
 
+    # 追加到历史评分文件（供主节点下次初选参考）
+    base_dir = Path(__file__).resolve().parent.parent
+    hist_file = base_dir / "data" / "skill_scores_history.json"
+    try:
+        hist = []
+        if hist_file.exists():
+            with open(hist_file, "r", encoding="utf-8") as f:
+                hist = json.load(f)
+        if not isinstance(hist, list):
+            hist = []
+        today = datetime.now().strftime("%Y-%m-%d")
+        entry = {
+            "date": today,
+            "results": [
+                {
+                    "stock_code": r["stock_code"],
+                    "stock_name": r.get("stock_name", ""),
+                    "final_score": r.get(
+                        "final_score",
+                        (r.get("detailed_report") or {}).get("overall_score", 0),
+                    ),
+                }
+                for r in results
+            ],
+        }
+        hist.append(entry)
+        hist_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(hist_file, "w", encoding="utf-8") as f:
+            json.dump(hist, f, ensure_ascii=False, indent=2)
+        log.info("历史评分已追加到: %s", hist_file)
+    except Exception as e:
+        log.warning("历史评分写入失败: %s", e)
+
 
 def main():
     parser = argparse.ArgumentParser(

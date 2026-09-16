@@ -1,5 +1,8 @@
 name: AlphaSift Skills 深度评分
 
+permissions:
+  contents: write
+
 on:
   workflow_dispatch:
     inputs:
@@ -60,3 +63,12 @@ jobs:
           python scripts/feishu_notifier.py --result analysis_result.json
 
           echo "飞书通知完成"
+
+      - name: 提交评分到仓库
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add data/skill_scores_history.json analysis_result.json
+          git diff --cached --quiet || git commit -m "Skills scores: $(date +%Y-%m-%d)"
+          git push
+          echo "评分历史已提交到仓库"
