@@ -49,6 +49,13 @@ jobs:
           pip install -r requirements.txt
           pip install git+https://github.com/ZhuLinsen/alphasift.git@main
 
+      - name: 应用 alphasift JSON 容错补丁
+        # 上游 ranker.py 无法容错 LLM 返回的畸形 JSON（截断 / 缺冒号 / 裸换行），
+        # 会导致 LLM 排序大面积失败。而 alphasift_discovery.py 优先 import 已安装
+        # 的包，改本地源码在 CI 里不生效，所以这里覆盖已安装文件。
+        # 上游合入同等修复后可删除本步骤与 vendor/alphasift/。
+        run: python scripts/apply_alphasift_patch.py
+
       - name: 运行 AlphaSift 初选
         id: discovery
         run: |
