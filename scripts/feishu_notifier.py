@@ -45,6 +45,98 @@ log.info("FEISHU_WEBHOOK 已配置: %s", bool(FEISHU_WEBHOOK))
 log.info("FEISHU_WEBHOOK_MAIN 已配置: %s", bool(FEISHU_WEBHOOK_MAIN))
 
 
+# ---------- 中文显示映射 ----------
+# 飞书卡片面向中文用户，正文里尽量不出现英文。所有"英文键 → 中文名"的映射
+# 集中放在这里，避免散落在拼接字符串里（散着放的结果就是漏掉几处）。
+
+# 详细报告各小节标题。与 run_skills_evaluation.py 里给 LLM 的 sections 定义一致，
+# 此前是用 section_key.replace("_", " ").title() 直接生成的（Company Overview 之类）。
+SECTION_TITLES = {
+    "company_overview": "公司概况与投资摘要",
+    "core_competitiveness": "核心竞争力分析",
+    "financial_health": "财务健康度",
+    "industry_policy": "行业与政策环境",
+    "management_governance": "管理层与公司治理",
+    "risk_warnings": "风险提示",
+    "valuation_advice": "估值与操作建议",
+    "skill_details": "各维度评估详情",
+}
+
+# 评分档位。此前直接打印 green / yellow / red 三个英文色名。
+SCORE_GRADES = ((80, "🟢 优秀"), (70, "🟡 良好"), (0, "🔴 偏弱"))
+
+
+def _score_grade(score) -> str:
+    """把分数映射成中文档位标签，无法解析时返回占位符。"""
+    try:
+        value = float(score)
+    except (TypeError, ValueError):
+        return "—"
+    for threshold, label in SCORE_GRADES:
+        if value >= threshold:
+            return label
+    return "—"
+
+
+def _load_skill_names() -> dict:
+    """读取 skills/prompts/*.yaml 的 key -> 中文 name 映射。
+
+    这些 YAML 的 name 字段本身就是中文（如 bottleneck-hunter -> 瓶颈猎手），
+    直接复用即可，不必另建一份会漂移的对照表。目录不存在（例如在精简过的
+    从节点上运行）时返回空映射，调用方会退回原样显示。
+    """
+    prompts_dir = Path(__file__).resolve().parent.parent / "skills" / "prompts"
+    names: dict[str, str] = {}
+    if not prompts_dir.is_dir():
+        return names
+    for yaml_file in sorted(prompts_dir.glob("*.yaml")):
+        key = yaml_file.stem
+        display = ""
+        try:
+            with open(yaml_file, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    stripped = line.rstrip()
+                    if stripped.startswith("key: "):
+                        key = stripped[5:].strip()
+                    elif stripped.startswith("name: "):
+                        display = stripped[6:].strip()
+                        break
+        except OSError:
+            continue
+        if display:
+            names[key] = display
+    return names
+
+
+SKILL_NAMES = _load_skill_names()
+
+
+def _skill_display_name(raw) -> str:
+    """把 skill 键名翻成中文；已是中文或未知键名则原样返回。"""
+    text = str(raw or "").strip()
+    if not text:
+        return "未知"
+    return SKILL_NAMES.get(text, text)
+
+
+def _section_title(key: str) -> str:
+    """小节键名 → 中文标题；未知键名做兜底处理，不直接暴露下划线英文。"""
+    if key in SECTION_TITLES:
+        return SECTION_TITLES[key]
+    return key.replace("_", " ").strip() or key
+
+
+def _text_or(value, placeholder: str = "暂无"):
+    """None / 空串显示占位符。
+
+    刻意不用 `value or placeholder` —— 0 和 False 是合法取值（比如失败数 0、
+    得分 0），被 `or` 吞掉会显示成"暂无"，属于静默失真。
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return placeholder
+    return value
+
+
 def build_card_message(results: list) -> dict:
     """构建飞书富文本卡片消息，包含详细报告。"""
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -57,7 +149,7 @@ def build_card_message(results: list) -> dict:
             "header": {
                 "title": {
                     "tag": "plain_text",
-                    "content": f"\U0001f916 AI投研多源流矩阵诊断报告 ({now})",
+                    "content": f"\U0001f916 AI 投研多源流矩阵诊断报告（{now}）",
                 },
                 "template": "violet",
             },
@@ -85,22 +177,17 @@ def build_card_message(results: list) -> dict:
         risks = r.get("risks", [])
         failed = r.get("llm_failed_count", 0)
         
-        # 颜色标记
-        if final_score >= 80:
-            score_color = "green"
-        elif final_score >= 70:
-            score_color = "yellow"
-        else:
-            score_color = "red"
+        # 评分档位（中文，替代原先直接打印的 green / yellow / red）
+        grade = _score_grade(final_score)
 
         # 基础信息块
         basic_content = (
             f"**{stock_name}（{stock_code}）**\n"
-            f"综合评分：**{final_score}** 分 [{score_color}]\n"
+            f"综合评分：**{final_score}** 分　{grade}\n"
         )
         if failed > 0:
-            basic_content += f"*（{failed} 个 Skill 调用失败）*\n"
-        basic_content += "\n**亮点 Skill：**\n" + "\n".join(f"- {h}" for h in highlights) + "\n"
+            basic_content += f"*（{failed} 个维度调用失败）*\n"
+        basic_content += "\n**亮点维度：**\n" + "\n".join(f"- {h}" for h in highlights) + "\n"
         basic_content += "\n**核心风险：**\n" + "\n".join(f"- {risk}" for risk in risks)
 
         elements.append({
@@ -116,8 +203,8 @@ def build_card_message(results: list) -> dict:
         if detailed and detailed.get("summary"):
             report_content = "\n\n---\n\n"
             report_content += f"**\U0001f4d8 详细分析报告 - {stock_name}**\n\n"
-            report_content += f"**投资建议：** {detailed.get('recommendation', 'N/A')}\n"
-            report_content += f"**综合评分：** {detailed.get('overall_score', 'N/A')}/100\n\n"
+            report_content += f"**投资建议：** {_text_or(detailed.get('recommendation'))}\n"
+            report_content += f"**综合评分：** {_text_or(detailed.get('overall_score'))}/100\n\n"
             report_content += f"**摘要：** {detailed['summary']}\n\n"
             
             sections = detailed.get("sections", {})
@@ -128,21 +215,26 @@ def build_card_message(results: list) -> dict:
                 if section_text and section_text != "{}":
                     # 截取前 500 字符避免超长
                     display_text = str(section_text)[:500]
-                    display_title = section_key.replace("_", " ").title()
-                    report_content += "**" + display_title + "**\n" + display_text + "\n\n"
+                    report_content += "**" + _section_title(section_key) + "**\n" + display_text + "\n\n"
 
-            # Skill 评分详情
+            # 维度评分详情
             skill_scores = detailed.get("skill_scores", {})
             if skill_scores:
-                report_content += "**Skill 评分统计：**\n"
-                report_content += f"- 平均分: {skill_scores.get('avg_score', 'N/A')}\n"
+                report_content += "**各维度评分统计：**\n"
+                report_content += f"- 平均分：{_text_or(skill_scores.get('avg_score'))}\n"
                 highest = skill_scores.get("highest_score")
                 if highest:
-                    report_content += f"- 最高分: {highest.get('skill', '?')} ({highest.get('score', '?')}分)\n"
+                    report_content += (
+                        f"- 最高分：{_skill_display_name(highest.get('skill'))}"
+                        f"（{_text_or(highest.get('score'))} 分）\n"
+                    )
                 lowest = skill_scores.get("lowest_score")
                 if lowest:
-                    report_content += f"- 最低分: {lowest.get('skill', '?')} ({lowest.get('score', '?')}分)\n"
-                report_content += f"- 失败数: {skill_scores.get('failed_count', 0)}\n"
+                    report_content += (
+                        f"- 最低分：{_skill_display_name(lowest.get('skill'))}"
+                        f"（{_text_or(lowest.get('score'))} 分）\n"
+                    )
+                report_content += f"- 失败项：{skill_scores.get('failed_count', 0)}\n"
             
             elements.append({
                 "tag": "div",
@@ -159,7 +251,7 @@ def build_card_message(results: list) -> dict:
         "elements": [
             {
                 "tag": "plain_text",
-                "content": "数据基于 AlphaSift 初选 + 19个深度投研Skills打分流程",
+                "content": "数据基于 AlphaSift 初选 + 19 个深度投研维度打分流程",
             }
         ],
     })
@@ -167,12 +259,122 @@ def build_card_message(results: list) -> dict:
     return card
 
 
-def build_main_card(stocks: str, first5: str, last5: str, code_b: str, code_c: str) -> dict:
-    """构建主节点通知卡片（初选结果 + 触发状态）。"""
+def _truncate_text(text, limit: int = 50) -> str:
+    """把文本截断到 limit 个字符，超出部分以省略号收尾。"""
+    value = str(text or "").strip()
+    if len(value) > limit:
+        return value[:limit] + "…"
+    return value
+
+
+def _format_change_pct(value) -> str:
+    """涨跌幅保留两位小数并带百分号；无法解析时显示占位符。"""
+    try:
+        return f"{float(value):.2f}%"
+    except (TypeError, ValueError):
+        return "暂无"
+
+
+def _build_theme_block(theme_summary) -> str:
+    """把题材总结数据渲染成飞书卡片里的一段 markdown 文案。
+
+    返回空串表示不渲染题材块（数据缺失或题材为空），调用方据此跳过整个 div，
+    避免出现空壳块。文案全部使用中文。
+    """
+    if not isinstance(theme_summary, dict):
+        return ""
+
+    themes = theme_summary.get("themes") or []
+    if not themes:
+        return ""
+
+    lines = ["**\U0001f525 今日短线热点题材**"]
+
+    summary = str(theme_summary.get("summary") or "").strip()
+    if summary:
+        lines.append(summary)
+
+    for idx, theme in enumerate(themes[:3], start=1):
+        name = str(theme.get("name") or "未知").strip()
+        leaders = [str(x).strip() for x in (theme.get("leaders") or []) if str(x).strip()]
+        leaders_text = "、".join(leaders) if leaders else "暂无"
+        logic_text = _truncate_text(theme.get("logic"), 50)
+
+        lines.append(f"**{idx}. {name}**")
+        lines.append(f"板块均涨：{_format_change_pct(theme.get('change_pct'))}")
+        lines.append(f"代表股：{leaders_text}")
+        lines.append(f"逻辑：{logic_text}")
+
+    # 降级说明：非模型分析时必须让用户知道逻辑只是盘面数据复述，避免误导。
+    if not theme_summary.get("llm_used", False):
+        lines.append("（逻辑为盘面数据自动归纳，非模型分析）")
+
+    return "\n".join(lines)
+
+
+def build_main_card(
+    stocks: str,
+    first5: str,
+    last5: str,
+    code_b: str,
+    code_c: str,
+    theme_summary: dict | None = None,
+) -> dict:
+    """构建主节点通知卡片（初选结果 + 题材总结 + 触发状态）。
+
+    版式顺序固定为：初选清单 div → 题材 div（可选）→ 触发状态 div。
+    题材块必须独立成块，位置由产品评审确定，不要自行调整。
+    """
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    status_b = "成功" if code_b in ("201", "204") else f"失败 ({code_b})"
-    status_c = "成功" if code_c in ("201", "204") else f"失败 ({code_c})"
+    status_b = "成功" if code_b in ("201", "204") else f"失败（{code_b}）"
+    status_c = "成功" if code_c in ("201", "204") else f"失败（{code_c}）"
+
+    elements = [
+        # 第一段：初选清单
+        {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": (
+                    f"本次股票初选共 {len(stocks.split(','))} 支\n"
+                    f"**初选股票：** {stocks}\n"
+                    f"\n"
+                    f"**前 5 支 → 账户 B：** {first5}\n"
+                    f"**后 5 支 → 账户 C：** {last5}"
+                ),
+            },
+        },
+    ]
+
+    # 第二段：题材总结（无数据时整块跳过，卡片退回两段式结构）
+    theme_content = _build_theme_block(theme_summary)
+    if theme_content:
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": theme_content},
+        })
+
+    # 第三段：触发状态
+    elements.append({
+        "tag": "div",
+        "text": {
+            "tag": "lark_md",
+            "content": (
+                f"**触发状态：**\n"
+                f"- 账户 B：{status_b}\n"
+                f"- 账户 C：{status_c}"
+            ),
+        },
+    })
+
+    elements.append({"tag": "hr"})
+    elements.append({
+        "tag": "note",
+        "elements": [
+            {"tag": "plain_text", "content": "数据基于 AlphaSift 初选 + 19 个深度投研维度打分流程"}
+        ],
+    })
 
     card = {
         "msg_type": "interactive",
@@ -181,36 +383,11 @@ def build_main_card(stocks: str, first5: str, last5: str, code_b: str, code_c: s
             "header": {
                 "title": {
                     "tag": "plain_text",
-                    "content": f"\U0001f4cb AlphaSift 初选完成 ({now})",
+                    "content": f"\U0001f4cb AlphaSift 初选完成（{now}）",
                 },
                 "template": "blue",
             },
-            "elements": [
-                {
-                    "tag": "div",
-                    "text": {
-                        "tag": "lark_md",
-                        "content": (
-                            f"本次股票初选共 {len(stocks.split(chr(44)))} 支\n"
-                            f"**初选股票:** {stocks}\n"
-                            f"\n"
-                            f"**前 5 支 -> 账户 B:** {first5}\n"
-                            f"**后 5 支 -> 账户 C:** {last5}\n"
-                            f"\n"
-                            f"**触发状态:**\n"
-                            f"- 账户 B: {status_b}\n"
-                            f"- 账户 C: {status_c}"
-                        ),
-                    },
-                },
-                {"tag": "hr"},
-                {
-                    "tag": "note",
-                    "elements": [
-                        {"tag": "plain_text", "content": "数据基于 AlphaSift 初选 + 19个深度投研Skills打分流程"}
-                    ],
-                },
-            ],
+            "elements": elements,
         },
     }
     return card
@@ -278,6 +455,11 @@ def main():
     parser.add_argument("--last5", default="", help="后5支股票（主节点模式）")
     parser.add_argument("--trigger-code-b", default="", help="账户 B 触发 HTTP 状态码")
     parser.add_argument("--trigger-code-c", default="", help="账户 C 触发 HTTP 状态码")
+    parser.add_argument(
+        "--theme-summary",
+        default="data/theme_summary.json",
+        help="短线热点题材总结文件路径（主节点模式，默认: data/theme_summary.json）",
+    )
     args = parser.parse_args()
 
     if args.mode == "main":
@@ -285,7 +467,26 @@ def main():
             log.error("主节点模式需要提供 --stocks 参数")
             sys.exit(1)
 
-        card_data = build_main_card(args.stocks, args.first5, args.last5, args.trigger_code_b, args.trigger_code_c)
+        # 题材总结缺失或损坏都不应中断通知：降级为不带题材块的两段式卡片。
+        theme_summary = None
+        if os.path.isfile(args.theme_summary):
+            try:
+                with open(args.theme_summary, "r", encoding="utf-8") as f:
+                    theme_summary = json.load(f)
+            except (json.JSONDecodeError, OSError) as e:
+                log.warning("题材总结文件解析失败，跳过题材块: %s", e)
+                theme_summary = None
+        else:
+            log.warning("题材总结文件不存在，跳过题材块: %s", args.theme_summary)
+
+        card_data = build_main_card(
+            args.stocks,
+            args.first5,
+            args.last5,
+            args.trigger_code_b,
+            args.trigger_code_c,
+            theme_summary=theme_summary,
+        )
         log.info("主节点飞书通知预览:\n%s", json.dumps(card_data, ensure_ascii=False, indent=2))
         success = send_to_feishu(card_data)
     else:
