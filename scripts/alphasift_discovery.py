@@ -262,7 +262,6 @@ def _filter_stocks(stocks):
         # 用新浪返回的名称覆盖（更准确）
         if code in name_map:
             name = name_map[code]
-        score = s.get("score", 0)
         reasons = []
 
         # 规则1: ST 股
@@ -274,13 +273,15 @@ def _filter_stocks(stocks):
         if any(kw in ind for kw in BANK_KEYWORDS):
             reasons.append("银行股")
 
-        # 规则3: 股价 > 100（高评分可豁免）
+        # 规则3: 股价 > 100 一律排除
+        # 这里原来写的是「score >= 0.85 则高分豁免」，但 score 是 0-100 量纲，
+        # 该条件恒为真；且两个分支都往 reasons 里追加，而 reasons 非空即被移除，
+        # 于是「豁免」从未生效、高价股无论多高分都会被删（曾误删全场最高分的
+        # 药明康德 83.30）。产品上暂定高价股一律排除，故直接写死，不再保留
+        # 任何形似豁免的分支 —— 免得下次又有人以为它生效。
         price = spot_map.get(code)
         if price and price > 100:
-            if score >= 0.85:
-                reasons.append(f"高价({price:.2f}元)但高分豁免")
-            else:
-                reasons.append(f"高价({price:.2f}元)")
+            reasons.append(f"高价({price:.2f}元)")
 
         if reasons:
             joined = ", ".join(reasons)
