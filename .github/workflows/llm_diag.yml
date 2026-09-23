@@ -137,14 +137,17 @@ jobs:
                   f"请为全部 {n} 支候选输出 ranked 项。"
               )
 
-          def verify(label, n, max_tokens, timeout):
+          def verify(label, n, max_tokens, timeout, json_mode=False):
               print(f"\n{label}")
-              st, dt, body = call("/chat/completions", {
+              payload = {
                   "model": model,
                   "messages": [{"role": "user", "content": build_prompt(n)}],
                   "temperature": 0.2,
                   "max_tokens": max_tokens,
-              }, timeout=timeout)
+              }
+              if json_mode:
+                  payload["response_format"] = {"type": "json_object"}
+              st, dt, body = call("/chat/completions", payload, timeout=timeout)
               print(f"  status={st}  耗时={dt:.1f}s")
               try:
                   j = json.loads(body)
@@ -153,6 +156,7 @@ jobs:
                   print("  finish_reason =", ch.get("finish_reason"))
                   print("  usage         =", j.get("usage"))
                   print('  "code" 出现次数 =', content.count('"code"'), f"(期望 {n})")
+                  print('  畸形标记 "x [" 出现次数 =', len(re.findall(r'"[a-z_]+ \[', content)))
                   s = content.strip()
                   if s.startswith("```"):
                       s = re.sub(r"^```[a-zA-Z]*\s*", "", s)
@@ -160,19 +164,24 @@ jobs:
                   try:
                       obj = json.loads(s)
                       got = len(obj.get("ranked") or [])
-                      print(f"  ==> JSON 可解析，ranked 项数 = {got} / {n}",
-                            "✅ 完整" if got >= n else "⚠️ 缺项")
+                      print(f"  ==> ✅ JSON 合法，ranked 项数 = {got} / {n}")
                   except Exception as pe:
-                      print("  ==> ❌ JSON 解析失败:", pe)
+                      print("  ==> ❌ JSON 非法:", pe)
                       print("  末 200 字:", content[-200:].replace("\n", " "))
               except Exception as e:
                   print("  外层解析失败:", e)
                   print("  原文前 400 字:", body[:400].replace("\n", " "))
               print("=" * 64)
 
-          print("\n[5] 修复验证 A：8 候选 + max_tokens=4096（推荐方案）")
+          print("\n[5] 修复验证 A：8 候选 + max_tokens=4096（无 response_format）")
           verify("[5]", 8, 4096, 180)
 
-          print("\n[6] 修复验证 B：30 候选 + max_tokens=8192（仅提 token 是否够）")
+          print("\n[6] 修复验证 B：30 候选 + max_tokens=8192（无 response_format）")
           verify("[6]", 30, 8192, 300)
+
+          print("\n[7] ★生产精确配置：8 候选 + 4096 + response_format=json_object")
+          verify("[7]", 8, 4096, 180, json_mode=True)
+
+          print("\n[8] ★生产精确配置：30 候选 + 8192 + response_format=json_object")
+          verify("[8]", 30, 8192, 300, json_mode=True)
           PY
