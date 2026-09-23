@@ -28,6 +28,7 @@ ENV/
 # 运行时产生的数据文件
 top_10_stocks.json
 analysis_result.json
+data/theme_summary.json
 
 # ⚠️ 环境变量文件 - 包含密钥，绝不提交
 .env

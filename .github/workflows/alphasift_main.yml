@@ -196,6 +196,17 @@ jobs:
             || { echo "::warning::rebase 失败，跳过本次推送"; exit 0; }
           git push || echo "::warning::推送失败，跳过（不影响后续通知）"
 
+      - name: 生成短线热点题材总结
+        # 位置：初选已产出 top_10_stocks.json（discovery 步骤），飞书通知在主卡片里
+        # 要展示题材块，因此本步骤必须排在飞书通知之前。
+        # 题材总结失败不能阻塞飞书通知（主题块会降级为不展示），故 continue-on-error。
+        continue-on-error: true
+        run: |
+          python scripts/theme_summary.py \
+            --snapshot data/snapshot_latest.json \
+            --picks top_10_stocks.json \
+            --output data/theme_summary.json
+
       - name: 飞书通知主节点结果
         run: |
           STOCKS="${{ steps.discovery.outputs.stock_list }}"
@@ -210,4 +221,5 @@ jobs:
             --first5 "$FIRST5" \
             --last5 "$LAST5" \
             --trigger-code-b "$CODE_B" \
-            --trigger-code-c "$CODE_C"
+            --trigger-code-c "$CODE_C" \
+            --theme-summary data/theme_summary.json
