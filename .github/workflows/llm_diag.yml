@@ -189,4 +189,9 @@ jobs:
 
           print("\n[8] ★生产精确配置：30 候选 + 8192 + response_format=json_object")
           verify("[8]", 30, 8192, 300, json_mode=True)
+
+          # 可靠性统计：同一配置重复 3 次，量化 JSON 合法率
+          for k in range(3):
+              print(f"\n[9.{k + 1}] 可靠性重复：8 候选 + 4096 + response_format（第 {k + 1}/3 次）")
+              verify(f"[9.{k + 1}]", 8, 4096, 180, json_mode=True)
           PY
