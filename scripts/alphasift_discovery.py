@@ -75,10 +75,18 @@ STRATEGIES = [
     "volume_breakout",          # 放量突破
     "shrink_pullback",          # 缩量回踩
     "oversold_reversal",        # 超跌反转
-    "dual_low",                 # 双低选股
+    # "dual_low",              # 双低选股 —— 已移除，见下方说明
     "blue_chip_income",         # 蓝筹收益质量
     "low_volatility_quality",   # 低波质量
 ]
+
+# 关于移除 dual_low（双低选股，低 PE + 低 PB）：
+# 它的 hard_filters 天然指向低估值大市值板块（银行/公用事业/钢铁），
+# 与目标持仓风格"短线热点题材 + 小盘弹性 + 成长股"方向相反。
+# 实测 2026-09-23 它选出的中国中铁(1052亿)也正好落在大盘蓝筹里。
+# 移除后 STRATEGIES 由 10 个变 9 个 —— 产出上限随之变 9 支，
+# 但下方"补足到 10 支"的逻辑（候选池 -> 本地快照 -> 模拟）会把它补回来，
+# 所以最终产出数量不变。
 
 # 银行股名称关键字与代码白名单（无网络即可判断）
 BANK_KEYWORDS = ["银行", "农商行", "农信社", "农村商业"]
@@ -90,6 +98,103 @@ KNOWN_BANK_CODES = {
     "601528", "601577", "601658", "601665", "601818", "601838", "601860", "601916",
     "601939", "601963", "601988", "601997", "601998",
 }
+
+# ---------- 持仓风格约束（目标：短线热点题材 + 小盘弹性 + 成长股）----------
+
+# 大盘蓝筹封顶。判定用"双轨制"，任一条命中即算大盘蓝筹：
+#   轨 A 策略来源 —— 由蓝筹型策略选出（这类策略的 hard_filters 天然偏大市值）；
+#   轨 B 市值口径 —— 总市值 >= 500 亿。
+#
+# 为什么必须双轨：只按轨 A 不够。实测 2026-09-23 的 9 支里仅 1 支来自蓝筹策略
+# （blue_chip_income 选的中国太保），按轨 A 封顶"一支都不会被剔除"，
+# 但实际有 5 支大盘股（中国平安/中国建筑/中国中铁/中国太保/京东方Ａ）。
+# 双轨制与既有的 KNOWN_BANK_CODES ∪ 名称含"银行" 是同构做法。
+BLUE_CHIP_STRATEGIES = {"blue_chip_income", "low_volatility_quality"}
+BLUE_CHIP_MARKET_CAP = 500 * 10 ** 8   # 单位：元 —— 快照 total_mv 就是元（采集端已 ×1e8）
+BLUE_CHIP_LIMIT = 2
+
+# 防御性代码前缀黑名单：创业板(300/301) / 科创板(688/689) / 北交所(8x/4x)。
+# 用户是 A 股新股民，不能买创业板。采集层 snapshot_collector 的 MAIN_BOARD_PREFIXES
+# 已经挡掉了（当前快照 3496 支里 300/301 共 0 支），这里保留一道过滤，
+# 防止以后有人放开采集前缀而选股侧毫无察觉。
+EXCLUDED_CODE_PREFIXES = ("300", "301", "688", "689", "8", "4")
+
+
+def _build_market_cap_map(df) -> dict:
+    """从快照 DataFrame 抽 code -> 总市值(元)。取不到时返回空 dict。
+
+    返回空 dict 不是错误：调用方会把蓝筹判定退化为"只看策略来源"，
+    而不是崩掉整条初选链路。
+    """
+    columns = getattr(df, "columns", None)
+    if df is None or columns is None or "total_mv" not in columns:
+        return {}
+    try:
+        return {
+            str(row["code"]): float(row["total_mv"])
+            for _, row in df.iterrows()
+            if row.get("total_mv")
+        }
+    except Exception as e:  # noqa: BLE001 - 快照格式异常不应中断初选
+        log.warning("  读取市值失败: %s，蓝筹判定退化为只看策略来源", e)
+        return {}
+
+
+def _is_blue_chip(stock: dict, market_cap_map: dict) -> bool:
+    """大盘蓝筹双轨判定：蓝筹策略选出，或总市值 >= 500 亿。"""
+    if stock.get("strategy") in BLUE_CHIP_STRATEGIES:
+        return True
+    cap = market_cap_map.get(str(stock.get("code", "")))
+    return cap is not None and cap >= BLUE_CHIP_MARKET_CAP
+
+
+def _cap_blue_chips(stocks: list, market_cap_map: dict, candidate_pool: dict | None = None) -> list:
+    """把大盘蓝筹压到 BLUE_CHIP_LIMIT 支以内。
+
+    入参 stocks 会先按综合分降序排一次（本函数内做，不依赖调用方顺序）。
+    超配时保留分数最高的若干支蓝筹，其余剔除；若给了 candidate_pool，
+    则用其中"非蓝筹且未被选中"的候选按分数回填，尽量维持原产出数量。
+
+    注意回填候选是在 _filter_stocks 之前收集的，所以本函数必须放在
+    _filter_stocks **之前**调用，否则回填进来的票会绕过 ST/银行/高价股过滤。
+    """
+    if not stocks:
+        return stocks
+
+    def _key(s):
+        return s.get("combined_score", s.get("score", 0))
+
+    ordered = sorted(stocks, key=_key, reverse=True)
+    blue = [s for s in ordered if _is_blue_chip(s, market_cap_map)]
+    if len(blue) <= BLUE_CHIP_LIMIT:
+        return stocks
+
+    kept_codes = {s["code"] for s in blue[:BLUE_CHIP_LIMIT]}
+    dropped = blue[BLUE_CHIP_LIMIT:]
+    log.info("  大盘蓝筹超配 %d 支（上限 %d），按综合分保留前 %d 支，剔除: %s",
+             len(blue), BLUE_CHIP_LIMIT, BLUE_CHIP_LIMIT,
+             ", ".join(f"{s.get('name', '')}({s['code']})" for s in dropped))
+
+    result = [s for s in ordered if s["code"] in kept_codes or not _is_blue_chip(s, market_cap_map)]
+
+    # 回填：从候选池补非蓝筹，尽量补回原有数量
+    if candidate_pool:
+        have = {s["code"] for s in result}
+        for pick in sorted(candidate_pool.values(), key=_key, reverse=True):
+            if len(result) >= len(stocks):
+                break
+            code = pick.get("code", "")
+            if not code or code in have or _is_blue_chip(pick, market_cap_map):
+                continue
+            result.append(pick)
+            have.add(code)
+            log.info("  [蓝筹剔除后补足] %s (%s)  综合: %.4f",
+                     pick.get("name", ""), code, _key(pick))
+
+    if len(result) < len(stocks):
+        log.info("  蓝筹封顶后共 %d 支（原 %d 支），候选池无非蓝筹可补",
+                 len(result), len(stocks))
+    return result
 
 
 def _is_bank(code: str, name: str) -> bool:
@@ -263,6 +368,12 @@ def _filter_stocks(stocks):
         if code in name_map:
             name = name_map[code]
         reasons = []
+
+        # 规则0: 板块限制 —— 创业板/科创板/北交所一律排除
+        # 用户是 A 股新股民，不能买创业板。采集层 MAIN_BOARD_PREFIXES 已经挡过
+        # 一道，这里是防御，防止以后有人放开采集前缀而选股侧毫无察觉。
+        if code.startswith(EXCLUDED_CODE_PREFIXES):
+            reasons.append("非主板")
 
         # 规则1: ST 股
         if "ST" in name.upper() or name.startswith("*ST") or name.startswith("ST"):
@@ -633,6 +744,9 @@ def discover_stocks(output_file: str, strategy: str = None, use_llm: bool = True
         and "pb_ratio" in _cached_snapshot_df.columns
     )
     raw_local_df = None
+    # 所有策略的合格候选（code -> pick），供"不足时按分补齐"与"蓝筹封顶后回填"
+    # 共用。定义在外层是因为蓝筹闸门在下面的 if/else 之后才调用。
+    candidate_pool: dict = {}
     if local_snapshot_full:
         raw_local_df = _cached_snapshot_df.copy()
         _cached_snapshot_df = _snapshot_to_alphasift_df(_cached_snapshot_df)
@@ -669,7 +783,6 @@ def discover_stocks(output_file: str, strategy: str = None, use_llm: bool = True
                 # 遍历所有策略，每个策略选 Top 1（跳过已占用/银行/ST 股）
                 used_codes = set()
                 all_stocks = []
-                candidate_pool = {}  # 所有策略的合格候选（code -> pick），供不足时按分补齐
                 for strat_name in STRATEGIES:
                     picks = _run_alphasift_screen(strat_name, top_n=10, use_llm=use_llm_rank,
                                                    snapshot_df=_cached_snapshot_df)
@@ -767,6 +880,12 @@ def discover_stocks(output_file: str, strategy: str = None, use_llm: bool = True
         stocks = [s for s in stocks if s.get("code", "") in codes]
         log.info("过滤条件: %s -> 保留 %d 支", stock_filter, len(stocks))
     
+    # 大盘蓝筹封顶（双轨制：蓝筹策略来源 ∪ 总市值 >= 500 亿）。
+    # 必须放在 _filter_stocks **之前** —— 回填候选是从 candidate_pool 拿的，
+    # 那批票还没过 ST/银行/高价股过滤，放到后面会绕过过滤。
+    cap_source = raw_local_df if raw_local_df is not None else _cached_snapshot_df
+    stocks = _cap_blue_chips(stocks, _build_market_cap_map(cap_source), candidate_pool)
+
     stocks = _filter_stocks(stocks)
     stocks = stocks[:10]
 
