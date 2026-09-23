@@ -20,7 +20,7 @@ jobs:
       - name: 诊断
         run: |
           python3 - <<'PY'
-          import json, os, time, urllib.request, urllib.error
+          import json, os, re, time, urllib.request, urllib.error
 
           def mask(v):
               if not v:
@@ -120,5 +120,59 @@ jobs:
           except Exception as e:
               print("  解析失败:", e)
               print("  原文前 400 字:", body[:400].replace("\n", " "))
-          print("=" * 64)
+          def build_prompt(n):
+              cs = "\n".join(
+                  f"{600000 + i} 测试股{i} 价格{i + 1}.00 涨幅{i % 5}.00% 量比1.{i % 9} PE{i + 10} 市值{i * 50}亿"
+                  for i in range(n)
+              )
+              return (
+                  "你是一个专业的股票研究员，任务是在候选池内做相对排序。\n"
+                  "## 候选列表\n" + cs + "\n\n"
+                  "## 输出要求\n只返回 JSON，不要 Markdown，不要解释 JSON 以外的文本。格式：\n"
+                  '{"market_view":"...","selection_logic":"...","portfolio_risk":"...",'
+                  '"ranked":[{"code":"股票代码","llm_score":0,"confidence":0,"sector":"...",'
+                  '"theme":"...","thesis":"...","reason":"...","risk":"...",'
+                  '"catalysts":["..."],"risk_flags":["..."],"tags":["..."],'
+                  '"style_fit":"...","watch_items":["..."],"invalidators":["..."]}]}\n'
+                  f"请为全部 {n} 支候选输出 ranked 项。"
+              )
+
+          def verify(label, n, max_tokens, timeout):
+              print(f"\n{label}")
+              st, dt, body = call("/chat/completions", {
+                  "model": model,
+                  "messages": [{"role": "user", "content": build_prompt(n)}],
+                  "temperature": 0.2,
+                  "max_tokens": max_tokens,
+              }, timeout=timeout)
+              print(f"  status={st}  耗时={dt:.1f}s")
+              try:
+                  j = json.loads(body)
+                  ch = (j.get("choices") or [{}])[0]
+                  content = (ch.get("message") or {}).get("content") or ""
+                  print("  finish_reason =", ch.get("finish_reason"))
+                  print("  usage         =", j.get("usage"))
+                  print('  "code" 出现次数 =', content.count('"code"'), f"(期望 {n})")
+                  s = content.strip()
+                  if s.startswith("```"):
+                      s = re.sub(r"^```[a-zA-Z]*\s*", "", s)
+                      s = re.sub(r"\s*```$", "", s)
+                  try:
+                      obj = json.loads(s)
+                      got = len(obj.get("ranked") or [])
+                      print(f"  ==> JSON 可解析，ranked 项数 = {got} / {n}",
+                            "✅ 完整" if got >= n else "⚠️ 缺项")
+                  except Exception as pe:
+                      print("  ==> ❌ JSON 解析失败:", pe)
+                      print("  末 200 字:", content[-200:].replace("\n", " "))
+              except Exception as e:
+                  print("  外层解析失败:", e)
+                  print("  原文前 400 字:", body[:400].replace("\n", " "))
+              print("=" * 64)
+
+          print("\n[5] 修复验证 A：8 候选 + max_tokens=4096（推荐方案）")
+          verify("[5]", 8, 4096, 180)
+
+          print("\n[6] 修复验证 B：30 候选 + max_tokens=8192（仅提 token 是否够）")
+          verify("[6]", 30, 8192, 300)
           PY
