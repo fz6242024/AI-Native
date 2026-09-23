@@ -603,8 +603,11 @@ def discover_stocks(output_file: str, strategy: str = None, use_llm: bool = True
         # 默认使用全部 10 个策略，每个选 Top 1
         strategy = None
         log.info("未指定策略，使用全部 %d 个策略各选 Top 1", len(STRATEGIES))
-        # Set flag to skip network for all subsequent strategy runs
-        os.environ["ALPHASIFT_SKIP_NETWORK"] = "1"
+        # 快照复用不在这里做 —— 真正的机制在 _run_alphasift_screen()：它把
+        # fetch_snapshot_with_fallback monkey-patch 成直接返回 _cached_snapshot_df，
+        # 所以 10 个策略只拉一次网络。此处原本还设 ALPHASIFT_SKIP_NETWORK=1，
+        # 但上游 alphasift 不认这个变量（其支持只存在于一份从未提交的本地改动里），
+        # 属纯死配置，已删除。
 
     # 兜底：alphasift 实时快照失败时，用本仓库当日快照
     if _cached_snapshot_df is None:
@@ -634,7 +637,9 @@ def discover_stocks(output_file: str, strategy: str = None, use_llm: bool = True
         raw_local_df = _cached_snapshot_df.copy()
         _cached_snapshot_df = _snapshot_to_alphasift_df(_cached_snapshot_df)
         _cached_snapshot_df.attrs["snapshot_source"] = "local_daily_snapshot"
-        # 写入 alphasift 的 last-good 缓存路径，让 screen() 内部跳过网络直接读当日数据
+        # 写入 alphasift 的 last-good 缓存，供真实网络拉取失败时兜底。
+        # 注意：screen() 本身并不靠这个缓存跳网络 —— 它走的是
+        # _run_alphasift_screen() 里的 monkey-patch。
         try:
             from alphasift.config import Config
             import alphasift.snapshot as snap_module
@@ -643,7 +648,6 @@ def discover_stocks(output_file: str, strategy: str = None, use_llm: bool = True
                 cache_path = Path(output_file).parent / ".snapshot_cache.json"
                 os.environ["ALPHASIFT_FALLBACK_SNAPSHOT_PATH"] = str(cache_path)
             snap_module._write_last_good_snapshot(cache_path, _cached_snapshot_df)
-            os.environ["ALPHASIFT_SKIP_NETWORK"] = "1"
             log.info("本地快照已写入 alphasift 缓存: %s", cache_path)
         except Exception as e:
             log.warning("写入 alphasift 缓存失败: %s", e)
