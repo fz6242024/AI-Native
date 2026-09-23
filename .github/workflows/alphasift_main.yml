@@ -163,7 +163,11 @@ jobs:
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add data/skill_history/
+          if [ -d data/skill_history ] && [ -n "$(ls -A data/skill_history 2>/dev/null)" ]; then
+            git add data/skill_history/
+          else
+            echo "data/skill_history 为空或不存在，跳过提交（不视为失败）"
+          fi
           git diff --cached --quiet || git commit -m "Skill history: $(date +%Y-%m-%d)"
           git push
 

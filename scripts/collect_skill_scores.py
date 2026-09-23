@@ -65,10 +65,10 @@ def wait_for_workflow(repo: str, token: str, timeout_minutes: int = 25) -> int |
     return None
 
 
-def download_history_file(repo: str, token: str = "", branch: str = "main") -> list | None:
+def download_history_file(repo: str, token: str = "", branch: str = "master") -> list | None:
     """从仓库下载评分历史文件：优先 API 带 token（私有仓库），再试 raw（公开仓库）。"""
     if token:
-        url = f"{API}/repos/{repo}/contents/data/skill_scores_history.json"
+        url = f"{API}/repos/{repo}/contents/data/skill_scores_history.json?ref={branch}"
         try:
             status, data = _request(url, token)
             if status == 200 and data and data.get("content"):
