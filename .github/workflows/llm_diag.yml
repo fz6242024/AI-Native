@@ -1,0 +1,124 @@
+name: LLM 连通性诊断
+
+# 临时诊断工作流：仅手动触发，用于排查 LLM 排序 100% 失败（no_json_found / timeout）
+# 排查完成后可删除本文件。不会输出任何密钥明文。
+
+on:
+  workflow_dispatch:
+
+jobs:
+  llm-diag:
+    name: LLM 连通性诊断
+    runs-on: ubuntu-latest
+    env:
+      LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+      LLM_MODEL: ${{ secrets.LLM_MODEL }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+    steps:
+      - name: 诊断
+        run: |
+          python3 - <<'PY'
+          import json, os, time, urllib.request, urllib.error
+
+          def mask(v):
+              if not v:
+                  return "<未配置>"
+              looks_openai = v.startswith("sk-")
+              return f"已配置 len={len(v)} 以sk-开头={looks_openai}"
+
+          base = (os.environ.get("LLM_BASE_URL") or os.environ.get("OPENAI_BASE_URL") or "").rstrip("/")
+          key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
+          model = os.environ.get("LLM_MODEL") or ""
+
+          print("=" * 64)
+          print("[0] 配置（密钥仅显示长度）")
+          print("  LLM_BASE_URL    =", base or "<未配置>")
+          print("  LLM_API_KEY     =", mask(os.environ.get("LLM_API_KEY")))
+          print("  LLM_MODEL       =", model or "<未配置>")
+          print("  OPENAI_API_KEY  =", mask(os.environ.get("OPENAI_API_KEY")))
+          print("  OPENAI_BASE_URL =", os.environ.get("OPENAI_BASE_URL") or "<未配置>")
+          print("=" * 64)
+
+          def call(path, payload=None, timeout=60):
+              url = base + path
+              data = json.dumps(payload).encode() if payload is not None else None
+              req = urllib.request.Request(url, data=data, method="POST" if data else "GET")
+              req.add_header("Authorization", "Bearer " + key)
+              req.add_header("Content-Type", "application/json")
+              t0 = time.time()
+              try:
+                  with urllib.request.urlopen(req, timeout=timeout) as r:
+                      return r.status, time.time() - t0, r.read().decode("utf-8", "replace")
+              except urllib.error.HTTPError as e:
+                  return e.code, time.time() - t0, e.read().decode("utf-8", "replace")
+              except Exception as e:
+                  return None, time.time() - t0, f"{type(e).__name__}: {e}"
+
+          print("\n[1] GET /models")
+          st, dt, body = call("/models")
+          print(f"  status={st}  耗时={dt:.1f}s")
+          print("  响应前 400 字:", body[:400].replace("\n", " "))
+
+          print("\n[2] 最小 JSON 请求（不带 response_format）")
+          st, dt, body = call("/chat/completions", {
+              "model": model,
+              "messages": [{"role": "user", "content": "只返回 JSON，不要任何其它文字：{\"ok\": true}"}],
+              "temperature": 0.2,
+              "max_tokens": 100,
+          }, timeout=90)
+          print(f"  status={st}  耗时={dt:.1f}s")
+          print("  原始响应:", body[:600].replace("\n", " "))
+
+          print("\n[3] 带 response_format=json_object")
+          st, dt, body = call("/chat/completions", {
+              "model": model,
+              "messages": [{"role": "user", "content": "返回 JSON：{\"ok\": true}"}],
+              "temperature": 0.2,
+              "max_tokens": 100,
+              "response_format": {"type": "json_object"},
+          }, timeout=90)
+          print(f"  status={st}  耗时={dt:.1f}s")
+          print("  原始响应:", body[:600].replace("\n", " "))
+
+          print("\n[4] 模拟真实排序负载（30 候选 x 15 字段，max_tokens=2048）")
+          print("    目的：检查 finish_reason 是否为 length（截断）")
+          cands = "\n".join(
+              f"{600000 + i} 测试股{i} 价格{i + 1}.00 涨幅{i % 5}.00% 量比1.{i % 9} PE{i + 10} 市值{i * 50}亿"
+              for i in range(30)
+          )
+          prompt = (
+              "你是一个专业的股票研究员，任务是在候选池内做相对排序。\n"
+              "## 候选列表\n" + cands + "\n\n"
+              "## 输出要求\n只返回 JSON，不要 Markdown，不要解释 JSON 以外的文本。格式：\n"
+              '{"market_view":"...","selection_logic":"...","portfolio_risk":"...",'
+              '"ranked":[{"code":"股票代码","llm_score":0,"confidence":0,"sector":"...",'
+              '"theme":"...","thesis":"...","reason":"...","risk":"...",'
+              '"catalysts":["..."],"risk_flags":["..."],"tags":["..."],'
+              '"style_fit":"...","watch_items":["..."],"invalidators":["..."]}]}\n'
+              "请为全部 30 支候选输出 ranked 项。"
+          )
+          st, dt, body = call("/chat/completions", {
+              "model": model,
+              "messages": [{"role": "user", "content": prompt}],
+              "temperature": 0.2,
+              "max_tokens": 2048,
+          }, timeout=120)
+          print(f"  status={st}  耗时={dt:.1f}s")
+          try:
+              j = json.loads(body)
+              ch = (j.get("choices") or [{}])[0]
+              content = (ch.get("message") or {}).get("content") or ""
+              print("  finish_reason =", ch.get("finish_reason"))
+              print("  usage         =", j.get("usage"))
+              print(f"  内容长度      = {len(content)}")
+              print("  含 { 字符     =", "{" in content)
+              print('  "code" 出现次数 =', content.count('"code"'))
+              print("  内容前 300 字 :", content[:300].replace("\n", " "))
+              print("  内容末 200 字 :", content[-200:].replace("\n", " "))
+          except Exception as e:
+              print("  解析失败:", e)
+              print("  原文前 400 字:", body[:400].replace("\n", " "))
+          print("=" * 64)
+          PY
