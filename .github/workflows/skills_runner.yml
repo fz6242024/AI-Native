@@ -71,8 +71,8 @@ jobs:
           # 只提交评分历史。analysis_result.json 在 .gitignore 里（运行时产物），
           # 把它一起列进 git add 会让整条命令以 exit 1 失败
           # （"The following paths are ignored by one of your .gitignore files"），
-          # 连 data/skill_scores_history.json 也会被连带漏提交 ——
-          # 这正是 C 账户评分历史一直 404 的原因。
+          # 连 data/skill_scores_history.json 也会被连带漏提交，导致评分历史
+          # 永远为空、主节点 A 的历史加权完全失效。
           git add data/skill_scores_history.json
           git diff --cached --quiet || git commit -m "Skills scores: $(date +%Y-%m-%d)"
           git push
