@@ -128,6 +128,31 @@ def load_skills_config():
 
 SKILLS_CONFIG = load_skills_config()
 
+# 一次评估里 LLM 调用失败（或没返回）的占比超过该阈值，就认为这次评分不可信。
+#
+# 背景：失败的 skill 会被记 50 分并计入分母，把整体均分往下拖；若把这种
+# "数据不足"的分数当成真实低分写进历史，主节点下次初选会反过来给这支股票
+# 减分（bonus = (50 - 70) * 0.6 = -12），与"数据不足"的语义完全相反。
+# 因此不可信的评分会被标记 reliable=false，主节点加权时直接跳过。
+MAX_UNRELIABLE_RATIO = 0.3
+
+
+def _is_evaluation_reliable(skill_total: int, skill_returned: int, llm_failed_count: int) -> bool:
+    """判断一次深度评分是否可信（供主节点决定要不要拿它做历史加权）。
+
+    任一命中即判为不可信：
+      1. 实际返回的 skill 条数缺口超过 30% —— 合并调用被截断时 total_score 只累加了
+         返回的部分，却仍按总数取平均，分数被系统性低估；
+      2. LLM 调用失败的 skill 占比超过 30% —— 失败项一律记 50 分，会把均分往下拖。
+    """
+    if skill_total <= 0:
+        return False
+    if (skill_total - skill_returned) > skill_total * MAX_UNRELIABLE_RATIO:
+        return False
+    if llm_failed_count > skill_total * MAX_UNRELIABLE_RATIO:
+        return False
+    return True
+
 
 def call_skill_llm(stock_code: str, stock_name: str, skill_key: str) -> dict:
     """调用 LLM 执行单个 Skill 的评估。"""
@@ -470,6 +495,16 @@ def evaluate_single_stock(stock_code: str) -> dict:
     log.info("  [%s] 开始生成详细分析报告...", stock_code)
     detailed_report = generate_detailed_report(stock_code, stock_name, skill_results)
     
+    skill_total = len(SKILLS_CONFIG)
+    skill_returned = len(skill_results)
+    reliable = _is_evaluation_reliable(skill_total, skill_returned, failed_count)
+    if not reliable:
+        log.warning(
+            "  [%s] 本次评分不可信（返回 %d/%d 个 Skill，失败 %d 个），"
+            "标记 reliable=false，主节点不会用它做历史加权",
+            stock_code, skill_returned, skill_total, failed_count,
+        )
+
     return {
         "stock_code": stock_code,
         "stock_name": stock_name,
@@ -478,6 +513,10 @@ def evaluate_single_stock(stock_code: str) -> dict:
         "highlights": highlights,
         "risks": risks,
         "llm_failed_count": failed_count,
+        # 可靠性元数据：主节点据此跳过不可信的评分（见 _is_evaluation_reliable）
+        "skill_total": skill_total,
+        "skill_returned": skill_returned,
+        "reliable": reliable,
         "detailed_report": detailed_report,
     }
 
@@ -538,6 +577,13 @@ def save_results(results: list, output_file: str) -> None:
         if not isinstance(hist, list):
             hist = []
         today = datetime.now().strftime("%Y-%m-%d")
+        unreliable = [r for r in results if not r.get("reliable", True)]
+        if unreliable:
+            log.warning(
+                "本次 %d/%d 支评分不可信，已标记 reliable=false（主节点加权时跳过）：%s",
+                len(unreliable), len(results),
+                ", ".join(str(r.get("stock_code", "?")) for r in unreliable),
+            )
         entry = {
             "date": today,
             "results": [
@@ -548,6 +594,12 @@ def save_results(results: list, output_file: str) -> None:
                         "final_score",
                         (r.get("detailed_report") or {}).get("overall_score", 0),
                     ),
+                    # 可靠性元数据：主节点据此跳过不可信的评分
+                    # （见 _is_evaluation_reliable 与 alphasift_discovery._load_history_scores）
+                    "reliable": r.get("reliable", True),
+                    "skill_total": r.get("skill_total", len(SKILLS_CONFIG)),
+                    "skill_returned": r.get("skill_returned", 0),
+                    "llm_failed_count": r.get("llm_failed_count", 0),
                 }
                 for r in results
             ],

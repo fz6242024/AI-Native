@@ -178,7 +178,7 @@ def _run_alphasift_screen(strategy: str, top_n: int = 10, use_llm: bool = False,
             "score": round(p.final_score, 4),
             "strategy": strategy,
         })
-        log.info("  %d. %s (%s)  评分: %.4f", len(stocks), p.name, p.code, p.final_score)
+        log.info("  %d. %s (%s)  初选分: %.4f", len(stocks), p.name, p.code, p.final_score)
         if len(stocks) >= top_n:
             break
     if len(stocks) < top_n:
@@ -419,16 +419,40 @@ def _snapshot_to_alphasift_df(df):
     return out
 
 
-def _load_history_scores() -> dict:
-    """读取 data/skill_history/ 与 data/skill_scores_history.json 的历史深度评分。"""
-    hist_dir = Path(__file__).resolve().parent.parent / "data" / "skill_history"
+def _history_item_score(item: dict) -> tuple[str, float] | None:
+    """从一条历史评分记录里取出 (code, score)，取不到返回 None。
+
+    注意 `not score` 的判断是刻意的：得分为 0 说明那次评估整个崩了，
+    属于"没有有效分数"而不是"分数极低"，直接丢弃比拿来加权更安全。
+    """
+    code = item.get("stock_code") or item.get("code")
+    score = item.get("final_score")
+    if score is None:
+        score = item.get("overall_score")
+    if not code or not score:
+        return None
+    return str(code), float(score)
+
+
+def _load_history_scores(base_dir: Path | None = None) -> dict:
+    """读取 data/skill_history/ 与 data/skill_scores_history.json 的历史深度评分。
+
+    返回 {code: {"avg": 平均分, "count": 出现次数}}，供选股时加权参考。
+
+    标记 reliable=false 的记录会被跳过：这类评分来自 LLM 大面积失败的评估，
+    其分数是被失败占位值（50 分）拖低的结果，属于"数据不足"而非"表现差"。
+    若照常加权，会得到 bonus=(50-70)*0.6=-12，把股票错误地降权。
+
+    base_dir 仅用于测试注入，默认取仓库根目录。
+    """
+    base = Path(base_dir) if base_dir is not None else Path(__file__).resolve().parent.parent
+    hist_dir = base / "data" / "skill_history"
     scores: dict[str, list[float]] = {}
+    skipped_unreliable = 0
     files = []
     if hist_dir.is_dir():
         files.extend(sorted(hist_dir.glob("*.json")))
-    hist_scores_file = (
-        Path(__file__).resolve().parent.parent / "data" / "skill_scores_history.json"
-    )
+    hist_scores_file = base / "data" / "skill_scores_history.json"
     if hist_scores_file.exists():
         files.append(hist_scores_file)
     for f in files:
@@ -442,21 +466,55 @@ def _load_history_scores() -> dict:
         if isinstance(data, dict):
             items = data.get("results", [])
         if isinstance(items, list) and items and isinstance(items[0], dict) and "results" in items[0]:
-            for entry in items:
-                for item in entry.get("results", []):
-                    code = item.get("stock_code") or item.get("code")
-                    score = item.get("final_score") or item.get("overall_score")
-                    if code and score:
-                        scores.setdefault(str(code), []).append(float(score))
-            continue
-        for item in (items if isinstance(items, list) else []):
-            code = item.get("stock_code") or item.get("code")
-            score = item.get("final_score") or item.get("overall_score")
-            if code and score:
-                scores.setdefault(str(code), []).append(float(score))
+            records = [item for entry in items for item in entry.get("results", [])]
+        elif isinstance(items, list):
+            records = items
+        else:
+            records = []
+        for item in records:
+            if not isinstance(item, dict):
+                continue
+            if item.get("reliable") is False:
+                skipped_unreliable += 1
+                continue
+            parsed = _history_item_score(item)
+            if parsed is None:
+                continue
+            code, score = parsed
+            scores.setdefault(code, []).append(score)
+    if skipped_unreliable:
+        log.info("历史评分中跳过 %d 条不可信记录（reliable=false）", skipped_unreliable)
     if not scores:
         return {}
-    return {code: sum(v) / len(v) for code, v in scores.items()}
+    return {code: {"avg": sum(v) / len(v), "count": len(v)} for code, v in scores.items()}
+
+
+def _apply_history_weight(stocks: list, history: dict) -> list:
+    """把历史深度评分合并进本次初选评分，生成综合分。
+
+    规则（通俗解释）：
+      - 历史均分以 70 分为中性线：高于 70 加分、低于 70 减分，每偏离 1 分影响 0.6 分
+      - 同一股票被深度评分 >= 3 次视为持续表现，加减分再加强 20%
+      - 没有历史评分的股票保持本次初选分不变
+    返回：在原字典上附加 combined_score / hist_avg / hist_count 字段。
+    """
+    if not history:
+        for s in stocks:
+            s["combined_score"] = float(s.get("score", 0))
+        return stocks
+    for s in stocks:
+        info = history.get(s.get("code"))
+        base = float(s.get("score", 0))
+        if info:
+            bonus = (info["avg"] - 70.0) * 0.6
+            if info["count"] >= 3:
+                bonus *= 1.2
+            s["combined_score"] = round(base + bonus, 4)
+            s["hist_avg"] = round(info["avg"], 2)
+            s["hist_count"] = info["count"]
+        else:
+            s["combined_score"] = base
+    return stocks
 
 
 def _fetch_and_cache_snapshot(output_file: str):
@@ -559,6 +617,9 @@ def discover_stocks(output_file: str, strategy: str = None, use_llm: bool = True
         and _cached_snapshot_df.attrs.get("snapshot_source") == "local_daily_snapshot"
     )
     use_llm_rank = use_llm and bool(LLM_API_KEY)
+    history = _load_history_scores()
+    if history:
+        log.info("读取到 %d 支股票的历史深度评分，选股时将用于加分/降权", len(history))
 
     # 本地快照含完整因子（PE/PB/市值等）时，转成 alphasift 格式走真实多因子打分
     local_snapshot_full = (
@@ -613,16 +674,17 @@ def discover_stocks(output_file: str, strategy: str = None, use_llm: bool = True
                         continue
 
                     # 先收集该策略所有合格候选（非银行/ST）进候选池，再取第一个未被占用的
+                    picks = _apply_history_weight(picks, history)
                     picked = None
-                    for pick in sorted(picks, key=lambda x: x.get("score", 0), reverse=True):
+                    for pick in sorted(picks, key=lambda x: x.get("combined_score", 0), reverse=True):
                         code = pick["code"]
                         name = pick.get("name", "")
                         if code in KNOWN_BANK_CODES or any(kw in name for kw in BANK_KEYWORDS):
                             continue
                         if "ST" in name.upper():
                             continue
-                        # 候选池只保留最高分（同一股票被多策略选中时）
-                        if code not in candidate_pool or candidate_pool[code].get("score", 0) < pick.get("score", 0):
+                        # 候选池只保留最高综合分（同一股票被多策略选中时）
+                        if code not in candidate_pool or candidate_pool[code].get("combined_score", 0) < pick.get("combined_score", 0):
                             candidate_pool[code] = pick
                         if picked is None and code not in used_codes:
                             picked = pick
@@ -630,8 +692,12 @@ def discover_stocks(output_file: str, strategy: str = None, use_llm: bool = True
                     if picked:
                         all_stocks.append(picked)
                         used_codes.add(picked["code"])
-                        log.info("  [%s] 选中: %s (%s)  评分: %.4f",
-                                 strat_name, picked["name"], picked["code"], picked["score"])
+                        # 排序键是 combined_score（含历史加权），日志必须打同一个口径，
+                        # 否则用户看到的分数序列会不递减、像 bug。
+                        log.info("  [%s] 选中: %s (%s)  综合: %.4f (初选: %.4f)",
+                                 strat_name, picked["name"], picked["code"],
+                                 picked.get("combined_score", picked.get("score", 0)),
+                                 picked.get("score", 0))
                     else:
                         log.warning("  [%s] 候选均被占用或为银行/ST 股，跳过", strat_name)
 
@@ -640,7 +706,7 @@ def discover_stocks(output_file: str, strategy: str = None, use_llm: bool = True
                 # 不足 10 支时：先从高分候选池补齐（比本地快照简化打分更优），再考虑兜底
                 if len(stocks) < 10:
                     log.warning("仅选出 %d 支，从高分候选池补足", len(stocks))
-                    for pick in sorted(candidate_pool.values(), key=lambda x: x.get("score", 0), reverse=True):
+                    for pick in sorted(candidate_pool.values(), key=lambda x: x.get("combined_score", 0), reverse=True):
                         if len(stocks) >= 10:
                             break
                         code = pick["code"]
@@ -648,8 +714,8 @@ def discover_stocks(output_file: str, strategy: str = None, use_llm: bool = True
                             continue
                         stocks.append(pick)
                         used_codes.add(code)
-                        log.info("  [候选池补足] %s (%s)  评分: %.4f",
-                                 pick["name"], code, pick["score"])
+                        log.info("  [候选池补足] %s (%s)  评分: %.4f  综合: %.4f",
+                                 pick["name"], code, pick["score"], pick.get("combined_score", 0))
                 if len(stocks) < 10:
                     log.warning("候选池不足，尝试用本地快照补足")
                     local_picks = _run_local_snapshot_screen(
@@ -699,17 +765,13 @@ def discover_stocks(output_file: str, strategy: str = None, use_llm: bool = True
     stocks = _filter_stocks(stocks)
     stocks = stocks[:10]
 
-    # 结合历史深度评分：高分股票排前
-    history = _load_history_scores()
-    if history:
-        def hist_key(s):
-            h = history.get(s["code"])
-            return -h if h else 0.0
-        stocks = sorted(stocks, key=hist_key)
-        hit = sum(1 for s in stocks if s["code"] in history)
-        log.info("结合历史深度评分排序，命中 %d/%d 支", hit, len(stocks))
+    # 结合历史深度评分：高分优先、低分降权，按综合分排序
+    stocks = _apply_history_weight(stocks, history)
+    hit = sum(1 for s in stocks if "hist_avg" in s)
+    log.info("结合历史深度评分，命中 %d/%d 支，已按综合分排序", hit, len(stocks))
+    stocks = sorted(stocks, key=lambda s: s.get("combined_score", 0), reverse=True)
 
-        # 保存为 JSON (include all fields including strategy)
+    # 保存为 JSON (include all fields including strategy)
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(stocks, f, ensure_ascii=False, indent=2)
     log.info("结果已保存到: %s", output_file)
@@ -720,15 +782,29 @@ def discover_stocks(output_file: str, strategy: str = None, use_llm: bool = True
 
     log.info("结果已保存到: %s", output_file)
 
-    # 打印摘要
+    # 打印摘要（与排序口径一致：主数字用 combined_score，即真正的排序键）
+    _log_summary(stocks)
+
+
+def _log_summary(stocks: list) -> None:
+    """打印初选摘要。
+
+    主数字必须是 combined_score —— 它才是排序键。此前摘要打的是原始初选分，
+    一旦历史加权生效，用户看到的分数序列就会不递减、看起来像 bug。
+    """
     log.info("-" * 40)
-    log.info("初选结果摘要:")
+    log.info("初选结果摘要（按综合分降序）:")
     for i, s in enumerate(stocks, 1):
         code = s["code"]
         name = s.get("name", "")
+        combined = s.get("combined_score", s.get("score", 0))
         score = s.get("score", 0)
         strat = s.get("strategy", "")
-        log.info("  %d. %s (%s)  评分: %.4f  [策略: %s]", i, name, code, score, strat)
+        hist = ""
+        if "hist_avg" in s:
+            hist = f"  历史均分: {s['hist_avg']:.2f}({s['hist_count']}次)"
+        log.info("  %d. %s (%s)  综合: %.4f (初选: %.4f)%s  [策略: %s]",
+                 i, name, code, combined, score, hist, strat)
     log.info("-" * 40)
     log.info("初选完成！共选出 %d 支股票。", len(stocks))
 
