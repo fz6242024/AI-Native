@@ -24,6 +24,14 @@ jobs:
       LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
       LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
       LLM_MODEL: ${{ secrets.LLM_MODEL }}
+      # LLM 排序输出预算。诊断见 deliverables/gstack/debug-llm-ranking-failure-2026-09-23.md
+      # 线上事故：30 候选 x 15 字段的输出需求 > 8192 tokens，2048 时必然被
+      # finish_reason=length 截断 -> JSON 不完整 -> no_json_found（9/10 策略失败，
+      # 白烧 850s）。实测 8 候选 + 4096 tokens 可稳定产出合法 JSON。
+      # 超时：实测单次响应 33-46s，原 60s 过于贴近，放宽到 120s。
+      LLM_MAX_CANDIDATES: "8"
+      LLM_MAX_TOKENS: "4096"
+      LLM_TIMEOUT_SEC: "120"
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
       FEISHU_WEBHOOK_MAIN: ${{ secrets.FEISHU_WEBHOOK_MAIN }}
