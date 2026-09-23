@@ -167,6 +167,11 @@ jobs:
                       print(f"  ==> ✅ JSON 合法，ranked 项数 = {got} / {n}")
                   except Exception as pe:
                       print("  ==> ❌ JSON 非法:", pe)
+                      m = re.search(r"char (\d+)", str(pe))
+                      if m:
+                          p = int(m.group(1))
+                          print(f"  错误位置 {p} 附近 320 字:",
+                                content[max(0, p - 160):p + 160].replace("\n", " "))
                       print("  末 200 字:", content[-200:].replace("\n", " "))
               except Exception as e:
                   print("  外层解析失败:", e)
