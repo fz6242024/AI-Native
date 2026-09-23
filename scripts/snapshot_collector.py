@@ -29,6 +29,21 @@ KNOWN_BANK_CODES = {
 }
 BANK_KW = ["银行", "农商行", "农信社", "农村商业"]
 
+# 可采集的主板代码前缀
+#   深市主板: 000xxx / 001xxx / 002xxx / 003xxx
+#             （002 为原中小板，2021-04 深交所合并至主板，无交易权限门槛）
+#   沪市主板: 600xxx / 601xxx / 603xxx / 605xxx
+# 注意: 300/301(创业板)、688(科创板)、8xx/4xx(北交所) 需单独开通交易权限，此处不采集
+MAIN_BOARD_PREFIXES = ("000", "001", "002", "003", "600", "601", "603", "605")
+
+# 各代码段的生成区间（含左不含右）
+CODE_RANGES = (
+    (1, 4000),          # 000001-003999 深市主板（000/001/002/003）
+    (600000, 602000),   # 600000-601999 沪市主板
+    (603000, 604000),   # 603000-603999 沪市主板
+    (605000, 606000),   # 605000-605999 沪市主板
+)
+
 def _tcc(code):
     return ("sz" if code.startswith(("0","3")) else "sh") + code
 
@@ -51,11 +66,9 @@ def fetch_main_board_stocks():
     all_stocks = []
     log.info("正在获取A股主板股票列表...")
     codes = []
-    for i in range(1, 1000): codes.append(f"{i:06d}")
-    for i in range(600000, 602000): codes.append(str(i))
-    for i in range(603000, 604000): codes.append(str(i))
-    for i in range(605000, 606000): codes.append(str(i))
-    log.info("主板候选代码总数: %d", len(codes))
+    for start, end in CODE_RANGES:
+        codes.extend(f"{i:06d}" for i in range(start, end))
+    log.info("主板候选代码总数: %d（含深市主板 000/001/002/003）", len(codes))
     batch_size = 50
     total_fetched = 0
     for bs in range(0, len(codes), batch_size):
@@ -70,7 +83,7 @@ def fetch_main_board_stocks():
                 if len(p) < 50: continue
                 code = p[2]
                 if not code: continue
-                if not (code.startswith("000") or code.startswith("600") or code.startswith("601") or code.startswith("603") or code.startswith("605")): continue
+                if not code.startswith(MAIN_BOARD_PREFIXES): continue
                 price = _f(p, 3)
                 # 腾讯接口字段位置：3价格 32涨跌幅 36成交量(手) 37成交额(万)
                 # 38换手率 39市盈率 44流通市值(亿) 45总市值(亿) 46市净率 49量比
