@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """snapshot_collector.py -- A股主板快照采集器（云端版）"""
-import json, logging, sys, time
+import json, logging, os, sys, time
 from datetime import datetime, timedelta
 from pathlib import Path
 import requests
@@ -44,6 +44,16 @@ CODE_RANGES = (
     (605000, 606000),   # 605000-605999 沪市主板
 )
 
+# 采集参数
+BATCH_SIZE = 50                     # 单次请求的股票数
+BATCH_RETRIES = 3                   # 单批最大尝试次数（含首次）
+BATCH_RETRY_BACKOFF_SECONDS = 1.5   # 重试退避基数（第 n 次重试等待 n * 基数）
+BATCH_INTERVAL_SECONDS = 0.5        # 批次间隔，降低被限流概率
+
+# 完整度下限：主板实际约 3400-3600 支。明显偏低说明大量批次失败，
+# 此时宁可失败也不要提交残缺快照（旧版 2354 支的池子会低于此值）。
+MIN_EXPECTED_STOCKS = int(os.environ.get("SNAPSHOT_MIN_EXPECTED", "3000"))
+
 def _tcc(code):
     return ("sz" if code.startswith(("0","3")) else "sh") + code
 
@@ -69,48 +79,69 @@ def fetch_main_board_stocks():
     for start, end in CODE_RANGES:
         codes.extend(f"{i:06d}" for i in range(start, end))
     log.info("主板候选代码总数: %d（含深市主板 000/001/002/003）", len(codes))
-    batch_size = 50
-    total_fetched = 0
+    batch_size = BATCH_SIZE
+    failed_batches = []
     for bs in range(0, len(codes), batch_size):
-        tcodes = [_tcc(c) for c in codes[bs:bs+batch_size]]
-        url = TENCENT_URL + ",".join(tcodes)
-        try:
-            r = requests.get(url, headers=TENCENT_REF, timeout=30)
-            r.encoding = "gbk"
-            for line in r.text.strip().split("\n"):
-                if "~" not in line: continue
-                p = line.split("~")
-                if len(p) < 50: continue
-                code = p[2]
-                if not code: continue
-                if not code.startswith(MAIN_BOARD_PREFIXES): continue
-                price = _f(p, 3)
-                # 腾讯接口字段位置：3价格 32涨跌幅 36成交量(手) 37成交额(万)
-                # 38换手率 39市盈率 44流通市值(亿) 45总市值(亿) 46市净率 49量比
-                all_stocks.append({
-                    "code": code,
-                    "name": p[1],
-                    "price": price,
-                    "change_pct": _f(p, 32),
-                    "volume": int(_f(p, 36)),
-                    "amount": _f(p, 37) * 10000.0,      # 万元 -> 元
-                    "turnover_rate": _f(p, 38),
-                    "pe_ratio": _f(p, 39) or 0.0,
-                    "circ_mv": _f(p, 44) * 1e8,          # 亿元 -> 元
-                    "total_mv": _f(p, 45) * 1e8,         # 亿元 -> 元
-                    "pb_ratio": _f(p, 46) or 0.0,
-                    "volume_ratio": _f(p, 49) or 1.0,    # 量比缺失按 1 处理
-                    "is_bank": _is_bank(code, p[1]),
-                    "timestamp": datetime.now().isoformat(),
-                })
-                total_fetched += 1
-            log.info("批次完成: %d/%d", total_fetched, len(codes))
-            time.sleep(0.5)
-        except Exception as e:
-            log.warning("批次请求失败 (%d-%d): %s", bs, bs+batch_size, e)
-            continue
-    log.info("主板快照采集完成，共 %d 支股票", total_fetched)
-    return all_stocks
+        chunk = codes[bs:bs+batch_size]
+        url = TENCENT_URL + ",".join(_tcc(c) for c in chunk)
+        batch_stocks = []
+        for attempt in range(1, BATCH_RETRIES + 1):
+            batch_stocks = []   # 每次尝试重置，避免失败重试时重复累加
+            try:
+                r = requests.get(url, headers=TENCENT_REF, timeout=30)
+                r.encoding = "gbk"
+                for line in r.text.strip().split("\n"):
+                    if "~" not in line: continue
+                    p = line.split("~")
+                    if len(p) < 50: continue
+                    code = p[2]
+                    if not code: continue
+                    if not code.startswith(MAIN_BOARD_PREFIXES): continue
+                    price = _f(p, 3)
+                    # 腾讯接口字段位置：3价格 32涨跌幅 36成交量(手) 37成交额(万)
+                    # 38换手率 39市盈率 44流通市值(亿) 45总市值(亿) 46市净率 49量比
+                    batch_stocks.append({
+                        "code": code,
+                        "name": p[1],
+                        "price": price,
+                        "change_pct": _f(p, 32),
+                        "volume": int(_f(p, 36)),
+                        "amount": _f(p, 37) * 10000.0,      # 万元 -> 元
+                        "turnover_rate": _f(p, 38),
+                        "pe_ratio": _f(p, 39) or 0.0,
+                        "circ_mv": _f(p, 44) * 1e8,          # 亿元 -> 元
+                        "total_mv": _f(p, 45) * 1e8,         # 亿元 -> 元
+                        "pb_ratio": _f(p, 46) or 0.0,
+                        "volume_ratio": _f(p, 49) or 1.0,    # 量比缺失按 1 处理
+                        "is_bank": _is_bank(code, p[1]),
+                        "timestamp": datetime.now().isoformat(),
+                    })
+                break   # 成功，跳出重试
+            except Exception as e:
+                if attempt < BATCH_RETRIES:
+                    wait = BATCH_RETRY_BACKOFF_SECONDS * attempt
+                    log.warning("批次请求失败 (%d-%d) 第 %d/%d 次，%.1fs 后重试: %s",
+                                bs, bs + batch_size, attempt, BATCH_RETRIES, wait, e)
+                    time.sleep(wait)
+                else:
+                    log.error("批次最终失败 (%d-%d)，本批最多丢失 %d 支: %s",
+                              bs, bs + batch_size, len(chunk), e)
+                    failed_batches.append((chunk[0], chunk[-1]))
+        all_stocks.extend(batch_stocks)
+        log.info("批次完成: %d/%d", len(all_stocks), len(codes))
+        time.sleep(BATCH_INTERVAL_SECONDS)
+
+    # 按代码去重（防御重试/接口异常导致的重复行）
+    deduped = {}
+    for s in all_stocks:
+        deduped.setdefault(s["code"], s)
+    stocks = list(deduped.values())
+    if failed_batches:
+        preview = ", ".join(f"{a}-{b}" for a, b in failed_batches[:10])
+        more = f" 等 {len(failed_batches)} 批" if len(failed_batches) > 10 else ""
+        log.warning("最终失败批次: %s%s", preview, more)
+    log.info("主板快照采集完成，共 %d 支股票", len(stocks))
+    return stocks
 
 def save_snapshot(stocks, filepath=None):
     if filepath is None: filepath = SNAPSHOT_FILE
@@ -140,11 +171,13 @@ def compute_diff(current, previous):
     return dd
 
 def archive_snapshot(data):
+    """按日期归档快照。同日重跑时覆盖，保证归档与最新快照一致。"""
     ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
     af = ARCHIVE_DIR / f"snapshot_{datetime.now().strftime('%Y%m%d')}.json"
-    if not af.exists():
-        with open(af, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
-        log.info("快照已归档: %s", af.name)
+    existed = af.exists()
+    with open(af, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
+    log.info("快照已归档: %s (%d 支)%s", af.name, data.get("total_stocks", 0),
+             "（覆盖同日旧归档）" if existed else "")
 
 def main():
     log.info("=" * 50)
@@ -153,6 +186,12 @@ def main():
     stocks = fetch_main_board_stocks()
     if not stocks:
         log.error("未采集到任何数据，退出")
+        sys.exit(1)
+    # 完整度校验：数量明显偏低说明大量批次失败，宁可失败也不写入残缺快照
+    if len(stocks) < MIN_EXPECTED_STOCKS:
+        log.error("采集数量异常偏低: %d 支（下限 %d），疑似大量批次失败，拒绝写入快照",
+                  len(stocks), MIN_EXPECTED_STOCKS)
+        log.error("如确属正常（例如市场大幅收缩），可用 SNAPSHOT_MIN_EXPECTED 环境变量下调下限")
         sys.exit(1)
     current_data = save_snapshot(stocks)
     previous_data = load_previous_snapshot()
