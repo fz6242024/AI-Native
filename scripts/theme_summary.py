@@ -25,6 +25,12 @@ from pathlib import Path
 
 import requests
 
+# 让 scripts/ 目录可被 import：以脚本方式运行时 scripts/ 已在 sys.path[0]，
+# 但测试用 importlib 按路径加载本文件时 scripts/ 不在 sys.path，故补幂等兜底。
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+
 # ---------- 加载 .env 文件 ----------
 _env_path = Path(__file__).resolve().parent.parent / ".env"
 if _env_path.exists():
@@ -45,67 +51,9 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 log.info(log_debug_msg)
 
-def resolve_llm_config(env=None) -> tuple:
-    """解析 LLM 配置，返回 (base_url, api_key, model)。
-
-    env 默认取 os.environ；显式传入映射便于测试。
-
-    解析链与 scripts/run_skills_evaluation.py:38-79 保持一致，顺序为：
-      1. LLM_CHANNELS（逗号分隔取第一段）→ LLM_<CHANNEL大写>_BASE_URL / _API_KEY / _MODELS
-      2. LLM_MY_PROXY_BASE_URL / _API_KEY / _MODELS
-      3. LLM_BASE_URL / LLM_API_KEY
-      4. OPENAI_BASE_URL / OPENAI_API_KEY（base_url 兜底 https://api.openai.com/v1）
-    其中 _MODELS 取逗号分隔第一段；LITELLM_MODEL 与 LLM_MODEL 可覆盖模型名。
-    """
-    if env is None:
-        env = os.environ
-
-    base_url = ""
-    api_key = ""
-    model = "agnes-3.0-flash"
-    model_from_channel = False
-
-    channels = env.get("LLM_CHANNELS", "")
-    if channels:
-        channel = channels.split(",")[0].strip()
-        base_url_var = f"LLM_{channel.upper()}_BASE_URL"
-        api_key_var = f"LLM_{channel.upper()}_API_KEY"
-        models_var = f"LLM_{channel.upper()}_MODELS"
-
-        base_url = env.get(base_url_var, "")
-        api_key = env.get(api_key_var, "")
-        if env.get(models_var):
-            model = env.get(models_var).split(",")[0].strip()
-            model_from_channel = True
-
-    # 渠道未配置，或渠道变量缺失 —— 继续走通用回退。
-    # 加固（原实现的超集）：原实现中 LLM_CHANNELS 非空却拿不到渠道变量时，
-    # 会停在空 base_url 直接失败、不再回退；这里补上回退，渠道正常时行为完全一致。
-    if not base_url or not api_key:
-        proxy_base = env.get("LLM_MY_PROXY_BASE_URL", "")
-        if proxy_base and not base_url:
-            base_url = proxy_base
-            if not api_key:
-                api_key = env.get("LLM_MY_PROXY_API_KEY", "")
-            if not model_from_channel:
-                model = env.get("LLM_MY_PROXY_MODELS", model)
-
-        if not base_url:
-            base_url = env.get("LLM_BASE_URL", "")
-        if not api_key:
-            api_key = env.get("LLM_API_KEY", "")
-
-        if not api_key:
-            api_key = env.get("OPENAI_API_KEY", "")
-        if not base_url:
-            base_url = env.get("LLM_BASE_URL") or env.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
-
-        model = env.get("LITELLM_MODEL", model)
-        _env_model = env.get("LLM_MODEL", "").strip()
-        if _env_model:
-            model = _env_model
-
-    return base_url, api_key, model
+# 解析链已收敛到 scripts/llm_config.py（唯一真相源）；此处 import 到本模块命名空间，
+# 既作为模块属性保持 `theme_summary.resolve_llm_config(...)` 的既有用法，也避免重复实现漂移。
+from llm_config import resolve_llm_config  # noqa: E402
 
 
 LLM_BASE_URL, LLM_API_KEY, LLM_MODEL = resolve_llm_config()

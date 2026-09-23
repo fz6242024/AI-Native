@@ -12,6 +12,13 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+# 让 scripts/ 目录可被 import：以 `python scripts/alphasift_discovery.py` 运行时
+# scripts/ 已在 sys.path[0]，裸 import 可用；但测试用 importlib 按路径加载本文件时
+# scripts/ 不在 sys.path，故补一段幂等兜底（不重复插入）。
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+
 # ---------- 加载 .env 文件 ----------
 _env_path = Path(__file__).resolve().parent.parent / ".env"
 if _env_path.exists():
@@ -33,9 +40,20 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 log.info(log_debug_msg)
 
-# ---------- 从 .env 读取配置（兼容多种变量名）----------
-LLM_BASE_URL = os.environ.get("LLM_BASE_URL") or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
-LLM_API_KEY = os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
+# ---------- 从 .env 读取配置（统一走共享解析链）----------
+# 解析链见 scripts/llm_config.py：支持 LLM_CHANNELS 渠道风格 / LLM_MY_PROXY_* /
+# LLM_BASE_URL / OPENAI_* 兜底，避免只认一种风格导致「线上能走通、本机跑不通」。
+from llm_config import resolve_llm_config, apply_llm_env
+
+# 关键：必须把解析结果导出到 os.environ（在任何 screen() 调用之前）。
+# 本脚本并不自己调 LLM —— 真正决定能否跑通的是第三方库 alphasift 内部的解析：
+#   alphasift.config._resolve_llm_model() 认得 LLM_CHANNELS 渠道（用来选 model），
+#   但 _resolve_llm_base_url() **只认 LLM_BASE_URL / OPENAI_BASE_URL，完全不用渠道**。
+# 本机 .env 只有渠道风格、没有 LLM_BASE_URL，若不导出，alphasift 拿到的 base_url
+# 就是空 → LLM 排序在本机永远失败。apply_llm_env() 正是唯一能补上 LLM_BASE_URL 的途径。
+_exported_llm_env = apply_llm_env()
+
+LLM_BASE_URL, LLM_API_KEY, LLM_MODEL = resolve_llm_config()
 FEISHU_WEBHOOK = os.environ.get("FEISHU_WEBHOOK", "")
 ALPHASIFT_PROJECT_PATH = os.environ.get(
     "ALPHASIFT_PROJECT_PATH",
@@ -43,7 +61,9 @@ ALPHASIFT_PROJECT_PATH = os.environ.get(
 )
 
 log.info("LLM_BASE_URL = %s", LLM_BASE_URL)
+log.info("LLM_MODEL = %s", LLM_MODEL)
 log.info("LLM_API_KEY 已配置: %s", bool(LLM_API_KEY))
+log.info("已导出到 os.environ（供 alphasift 内部解析）: %s", _exported_llm_env)
 log.info("FEISHU_WEBHOOK 已配置: %s", bool(FEISHU_WEBHOOK))
 log.info("AlphaSift 项目路径 = %s", ALPHASIFT_PROJECT_PATH)
 
@@ -948,7 +968,11 @@ def main():
   %(default)s
 
 前置条件:
-  在项目根目录创建 .env 文件，填入 LLM_API_KEY 或 OPENAI_API_KEY 等变量。
+  在项目根目录创建 .env 文件配置 LLM。支持以下任一风格（解析顺序见 scripts/llm_config.py）：
+    1) 渠道风格: LLM_CHANNELS=my_proxy + LLM_MY_PROXY_BASE_URL / _API_KEY / _MODELS
+    2) 通用风格: LLM_BASE_URL / LLM_API_KEY
+    3) 兜底:     OPENAI_BASE_URL / OPENAI_API_KEY
+  模型名可用 LITELLM_MODEL 或 LLM_MODEL 覆盖。
   完整配置说明见 docs/LLM_CONFIG_GUIDE.md
         """,
     )
