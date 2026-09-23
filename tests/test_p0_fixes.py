@@ -9,6 +9,7 @@
 # 运行：python -m pytest tests/test_p0_fixes.py -q
 # ============================================================
 
+import base64
 import importlib.util
 import json
 import sys
@@ -176,6 +177,92 @@ def test_fetch_history_returns_none_on_http_error(collector, monkeypatch):
     monkeypatch.setattr(collector, "_request", boom)
     monkeypatch.setattr(collector.urllib.request, "urlopen", boom)
     assert collector._fetch_history_from_branch("owner/repo", "tok", "master") is None
+
+
+def _payload():
+    body = json.dumps([{"date": "2026-09-24", "results": []}]).encode("utf-8")
+    return 200, {"content": base64.b64encode(body).decode("ascii")}
+
+
+def test_fetch_history_retries_transient_api_error(collector, monkeypatch):
+    """网络抖动必须重试同一分支。
+
+    否则"网络不通"会被误判成"该分支没有这个文件"，白白试完所有分支后
+    报出误导性的"所有候选分支均未取到"——实测本地代理抖动时就是这样。
+    """
+    monkeypatch.setattr(collector.time, "sleep", lambda s: None)
+    calls = []
+
+    def flaky(url, token, method="GET", payload=None):
+        calls.append(url)
+        if len(calls) == 1:
+            raise ConnectionResetError("connection reset by peer")
+        return _payload()
+
+    monkeypatch.setattr(collector, "_request", flaky)
+
+    def must_not_fall_back(*a, **k):
+        raise AssertionError("API 重试成功后不应再回退到 raw")
+
+    monkeypatch.setattr(collector.urllib.request, "urlopen", must_not_fall_back)
+
+    out = collector._fetch_history_from_branch("owner/repo", "tok", "master")
+    assert out == [{"date": "2026-09-24", "results": []}]
+    assert len(calls) == 2, f"第一次抖动后应重试同一分支，实际请求 {len(calls)} 次"
+
+
+def test_fetch_history_does_not_retry_on_404(collector, monkeypatch):
+    """404 说明该分支确实没有，应立刻换分支，不做无谓重试。"""
+    import urllib.error
+
+    monkeypatch.setattr(collector.time, "sleep", lambda s: None)
+    calls = []
+
+    def not_found(url, token, method="GET", payload=None):
+        calls.append(url)
+        raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+    def raw_not_found(*a, **k):
+        raise urllib.error.HTTPError("u", 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(collector, "_request", not_found)
+    monkeypatch.setattr(collector.urllib.request, "urlopen", raw_not_found)
+
+    assert collector._fetch_history_from_branch("owner/repo", "tok", "master") is None
+    assert len(calls) == 1, f"404 不应重试，实际请求 {len(calls)} 次"
+
+
+def test_fetch_history_falls_back_to_raw_after_api_exhausted(collector, monkeypatch):
+    """API 侧重试耗尽后，仍应尝试 raw 兜底。"""
+    monkeypatch.setattr(collector.time, "sleep", lambda s: None)
+
+    def always_reset(*a, **k):
+        raise ConnectionResetError("reset")
+
+    monkeypatch.setattr(collector, "_request", always_reset)
+
+    calls = {"n": 0}
+
+    class _Resp:
+        def read(self):
+            return json.dumps([{"date": "2026-09-24", "results": []}]).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def raw_ok(*a, **k):
+        calls["n"] += 1
+        return _Resp()
+
+    monkeypatch.setattr(collector.urllib.request, "urlopen", raw_ok)
+
+    assert collector._fetch_history_from_branch("owner/repo", "tok", "master") == [
+        {"date": "2026-09-24", "results": []}
+    ]
+    assert calls["n"] == 1, "raw 一次就成功，不该重复请求"
 
 
 # ------------------------------------------------------------

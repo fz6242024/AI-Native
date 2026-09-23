@@ -98,31 +98,53 @@ def _repo_default_branch(repo: str, token: str) -> str | None:
     return None
 
 
-def _fetch_history_from_branch(repo: str, token: str, branch: str) -> list | None:
-    """从指定分支取评分历史。返回 None 表示该分支没有/读不到（继续试下一个分支）。"""
+def _fetch_history_from_branch(repo: str, token: str, branch: str, attempts: int = 3) -> list | None:
+    """从指定分支取评分历史。返回 None 表示该分支没有/读不到（继续试下一个分支）。
+
+    注意区分两类失败：
+      - HTTP 4xx（尤其 404）说明该分支**确实没有**这个文件，直接换下一个分支；
+      - 网络类异常（连接被重置/超时）只是抖动，**必须重试**，
+        否则会把"网络不通"误判成"文件不存在"，最后报出误导性的
+        "所有候选分支均未取到"。
+    """
     api_url = f"{API}/repos/{repo}/contents/{HISTORY_PATH}?ref={branch}"
     if token:
-        try:
-            status, data = _request(api_url, token)
-            if status == 200 and data and data.get("content"):
-                import base64
-                log.info("  已从 %s@%s 取到评分历史（API）", repo, branch)
-                return json.loads(base64.b64decode(data["content"]).decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            log.info("  %s@%s 无评分历史（API HTTP %s）", repo, branch, e.code)
-        except Exception as e:
-            log.warning("  %s@%s API 下载失败: %s", repo, branch, e)
+        for i in range(1, attempts + 1):
+            try:
+                status, data = _request(api_url, token)
+                if status == 200 and data and data.get("content"):
+                    import base64
+                    log.info("  已从 %s@%s 取到评分历史（API）", repo, branch)
+                    return json.loads(base64.b64decode(data["content"]).decode("utf-8"))
+                break  # 200 但没有 content：该分支确实没有
+            except urllib.error.HTTPError as e:
+                log.info("  %s@%s 无评分历史（API HTTP %s）", repo, branch, e.code)
+                break
+            except Exception as e:
+                if i < attempts:
+                    log.info("  %s@%s API 请求异常，重试 %d/%d: %s", repo, branch, i, attempts - 1, e)
+                    time.sleep(2)
+                    continue
+                log.warning("  %s@%s API 下载失败（已重试 %d 次）: %s", repo, branch, attempts, e)
+                break
 
     raw_url = f"{RAW}/{repo}/{branch}/{HISTORY_PATH}"
-    try:
-        req = urllib.request.Request(raw_url, headers={"User-Agent": "AlphaSift-collector"})
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            log.info("  已从 %s@%s 取到评分历史（raw）", repo, branch)
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        log.info("  %s@%s 无评分历史（raw HTTP %s）", repo, branch, e.code)
-    except Exception as e:
-        log.warning("  %s@%s raw 下载失败: %s", repo, branch, e)
+    for i in range(1, attempts + 1):
+        try:
+            req = urllib.request.Request(raw_url, headers={"User-Agent": "AlphaSift-collector"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                log.info("  已从 %s@%s 取到评分历史（raw）", repo, branch)
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            log.info("  %s@%s 无评分历史（raw HTTP %s）", repo, branch, e.code)
+            break
+        except Exception as e:
+            if i < attempts:
+                log.info("  %s@%s raw 请求异常，重试 %d/%d: %s", repo, branch, i, attempts - 1, e)
+                time.sleep(2)
+                continue
+            log.warning("  %s@%s raw 下载失败（已重试 %d 次）: %s", repo, branch, attempts, e)
+            break
     return None
 
 
