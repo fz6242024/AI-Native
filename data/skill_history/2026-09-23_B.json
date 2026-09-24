@@ -5,7 +5,7 @@
     {
       "stock_code": "601975",
       "stock_name": "601975",
-      "final_score": 72,
+      "final_score": 76,
       "reliable": true,
       "skill_total": 19,
       "skill_returned": 19,
@@ -14,25 +14,7 @@
     {
       "stock_code": "600499",
       "stock_name": "600499",
-      "final_score": 85,
-      "reliable": true,
-      "skill_total": 19,
-      "skill_returned": 19,
-      "llm_failed_count": 0
-    },
-    {
-      "stock_code": "601668",
-      "stock_name": "601668",
       "final_score": 67,
-      "reliable": true,
-      "skill_total": 19,
-      "skill_returned": 19,
-      "llm_failed_count": 0
-    },
-    {
-      "stock_code": "601318",
-      "stock_name": "中国平安",
-      "final_score": 80,
       "reliable": true,
       "skill_total": 19,
       "skill_returned": 19,
@@ -41,10 +23,28 @@
     {
       "stock_code": "603229",
       "stock_name": "603229",
-      "final_score": 76,
+      "final_score": 61,
       "reliable": true,
       "skill_total": 19,
       "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "600884",
+      "stock_name": "600884",
+      "final_score": 64,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "601390",
+      "stock_name": "601390",
+      "final_score": 72,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 20,
       "llm_failed_count": 0
     }
   ]

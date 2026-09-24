@@ -1,0 +1,51 @@
+{
+  "date": "2026-09-24",
+  "account": "B",
+  "results": [
+    {
+      "stock_code": "600499",
+      "stock_name": "600499",
+      "final_score": 64,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "601975",
+      "stock_name": "601975",
+      "final_score": 82,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "601318",
+      "stock_name": "中国平安",
+      "final_score": 78,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "601872",
+      "stock_name": "601872",
+      "final_score": 70,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "600587",
+      "stock_name": "600587",
+      "final_score": 71,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    }
+  ]
+}

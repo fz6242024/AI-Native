@@ -3,18 +3,18 @@
   "account": "C",
   "results": [
     {
-      "stock_code": "601390",
-      "stock_name": "601390",
-      "final_score": 74,
+      "stock_code": "000725",
+      "stock_name": "000725",
+      "final_score": 82,
       "reliable": true,
       "skill_total": 19,
       "skill_returned": 19,
       "llm_failed_count": 0
     },
     {
-      "stock_code": "600884",
-      "stock_name": "600884",
-      "final_score": 63,
+      "stock_code": "601668",
+      "stock_name": "601668",
+      "final_score": 79,
       "reliable": true,
       "skill_total": 19,
       "skill_returned": 19,
@@ -23,16 +23,16 @@
     {
       "stock_code": "601601",
       "stock_name": "中国太保",
-      "final_score": 74,
+      "final_score": 80,
       "reliable": true,
       "skill_total": 19,
       "skill_returned": 19,
       "llm_failed_count": 0
     },
     {
-      "stock_code": "000725",
-      "stock_name": "000725",
-      "final_score": 84,
+      "stock_code": "601628",
+      "stock_name": "601628",
+      "final_score": 74,
       "reliable": true,
       "skill_total": 19,
       "skill_returned": 19,
