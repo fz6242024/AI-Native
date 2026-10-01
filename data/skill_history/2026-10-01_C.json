@@ -1,0 +1,51 @@
+{
+  "date": "2026-10-01",
+  "account": "C",
+  "results": [
+    {
+      "stock_code": "605100",
+      "stock_name": "605100",
+      "final_score": 47,
+      "reliable": false,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 9
+    },
+    {
+      "stock_code": "000036",
+      "stock_name": "000036",
+      "final_score": 86,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "002833",
+      "stock_name": "002833",
+      "final_score": 66,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "002273",
+      "stock_name": "002273",
+      "final_score": 64,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "002773",
+      "stock_name": "002773",
+      "final_score": 79,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    }
+  ]
+}
