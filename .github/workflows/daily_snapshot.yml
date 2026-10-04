@@ -1,5 +1,8 @@
 name: 每日A股快照采集
 
+permissions:
+  contents: write
+
 on:
   schedule:
     - cron: '30 7 * * 1-5'
@@ -28,10 +31,16 @@ jobs:
       - name: Collect snapshot
         run: python scripts/snapshot_collector.py
 
-      - name: Commit and push
+      - name: 发布快照到 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add data/
-          git diff --cached --quiet || git commit -m "Daily snapshot: $(date +%Y-%m-%d)"
-          git push
+          DATE=$(date +%Y-%m-%d)
+          gh release create "snapshot-$DATE" data/snapshot_latest.json \
+            --title "A股快照 $DATE" --notes "自动采集" || \
+          gh release upload "snapshot-$DATE" data/snapshot_latest.json --clobber
+          # 主节点锚点：固定 tag，每天覆盖同名 Release 供 alphasift_main.yml 固定下载
+          gh release delete snapshot-latest --yes || true
+          gh release create snapshot-latest data/snapshot_latest.json \
+            --title "最新快照锚点" --prerelease --notes "主节点固定下载此 tag"
+
