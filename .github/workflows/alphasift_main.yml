@@ -56,6 +56,14 @@ jobs:
         # 上游合入同等修复后可删除本步骤与 vendor/alphasift/。
         run: python scripts/apply_alphasift_patch.py
 
+      - name: 拉取最新快照
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p data
+          gh release download snapshot-latest \
+            -p "snapshot_latest.json" -D data --clobber
+
       - name: 运行 AlphaSift 初选
         id: discovery
         run: |
