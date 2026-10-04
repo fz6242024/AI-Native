@@ -47,3 +47,6 @@ Thumbs.db
 
 # GitHub Actions
 *.log
+
+# 每日快照走 Release 资产，不入库
+data/snapshot_latest.json
