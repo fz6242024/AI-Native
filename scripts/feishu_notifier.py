@@ -63,7 +63,7 @@ SECTION_TITLES = {
 }
 
 # 评分档位。此前直接打印 green / yellow / red 三个英文色名。
-SCORE_GRADES = ((80, "🟢 优秀"), (70, "🟡 良好"), (0, "🔴 偏弱"))
+SCORE_GRADES = ((80, "🟢 优选"), (70, "🔵 良好"), (60, "🟡 观察"), (0, "🔴 谨慎"))
 
 
 def _score_grade(score) -> str:
@@ -76,6 +76,16 @@ def _score_grade(score) -> str:
         if value >= threshold:
             return label
     return "—"
+
+
+def _render_progress_bar(score, width: int = 10) -> str:
+    """生成紧凑的字符进度条，如 [████████░░]。"""
+    try:
+        val = max(0.0, min(100.0, float(score)))
+    except (TypeError, ValueError):
+        return "—"
+    filled = int(round(val / 100.0 * width))
+    return "[" + "█" * filled + "░" * (width - filled) + "]"
 
 
 def _load_skill_names() -> dict:
@@ -169,6 +179,28 @@ def build_card_message(results: list) -> dict:
         },
     })
 
+    # 评分梯队直观对比看板
+    sorted_res = sorted(results, key=lambda x: float(x.get("final_score", 0)), reverse=True)
+    ladder_lines = ["**📊 候选标的评分梯队直观总览：**"]
+    medals = ["🥇", "🥈", "🥉"]
+    for idx, r in enumerate(sorted_res, start=1):
+        icon = medals[idx - 1] if idx <= 3 else "  "
+        code = r.get("stock_code", "")
+        name = r.get("stock_name", "")
+        score = r.get("final_score", 0)
+        grade = _score_grade(score)
+        bar = _render_progress_bar(score, width=8)
+        ladder_lines.append(f"{icon} `{code}` **{name:<4}** {bar} **{score:>2}**分 {grade}")
+
+    elements.append({
+        "tag": "div",
+        "text": {
+            "tag": "lark_md",
+            "content": "\n".join(ladder_lines),
+        },
+    })
+    elements.append({"tag": "hr"})
+
     for r in results:
         stock_code = r["stock_code"]
         stock_name = r["stock_name"]
@@ -177,13 +209,14 @@ def build_card_message(results: list) -> dict:
         risks = r.get("risks", [])
         failed = r.get("llm_failed_count", 0)
         
-        # 评分档位（中文，替代原先直接打印的 green / yellow / red）
+        # 评分档位与直观进度条
         grade = _score_grade(final_score)
+        bar = _render_progress_bar(final_score, width=10)
 
         # 基础信息块
         basic_content = (
             f"**{stock_name}（{stock_code}）**\n"
-            f"综合评分：**{final_score}** 分　{grade}\n"
+            f"综合评分：**{final_score}** 分 {bar}　{grade}\n"
         )
         if failed > 0:
             basic_content += f"*（{failed} 个维度调用失败）*\n"

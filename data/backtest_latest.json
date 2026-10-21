@@ -1,0 +1,83 @@
+{
+  "report_date": "2026-10-20",
+  "backtest_date": "2026-10-21",
+  "benchmark": "上证指数 (000001)",
+  "benchmark_return_pct": -0.6,
+  "portfolio_avg_return_pct": -0.86,
+  "portfolio_avg_max_return_pct": 2.25,
+  "portfolio_alpha_pct": -0.26,
+  "win_rate_pct": 40.0,
+  "beat_bench_rate_pct": 60.0,
+  "details": [
+    {
+      "stock_code": "002460",
+      "stock_name": "赣锋锂业",
+      "score": 56.0,
+      "t_close": 37.8,
+      "t1_open": 37.83,
+      "t1_high": 38.0,
+      "t1_low": 36.45,
+      "t1_close": 36.66,
+      "return_pct": -3.02,
+      "max_return_pct": 0.53,
+      "max_drawdown_pct": -3.57,
+      "alpha_vs_bench": -2.42
+    },
+    {
+      "stock_code": "000887",
+      "stock_name": "中鼎股份",
+      "score": 64.0,
+      "t_close": 17.3,
+      "t1_open": 17.29,
+      "t1_high": 17.65,
+      "t1_low": 17.07,
+      "t1_close": 17.48,
+      "return_pct": 1.04,
+      "max_return_pct": 2.02,
+      "max_drawdown_pct": -1.33,
+      "alpha_vs_bench": 1.64
+    },
+    {
+      "stock_code": "002487",
+      "stock_name": "大金重工",
+      "score": 79.0,
+      "t_close": 34.66,
+      "t1_open": 34.63,
+      "t1_high": 35.28,
+      "t1_low": 33.75,
+      "t1_close": 33.81,
+      "return_pct": -2.45,
+      "max_return_pct": 1.79,
+      "max_drawdown_pct": -2.63,
+      "alpha_vs_bench": -1.85
+    },
+    {
+      "stock_code": "601668",
+      "stock_name": "中国建筑",
+      "score": 86.0,
+      "t_close": 4.53,
+      "t1_open": 4.55,
+      "t1_high": 4.55,
+      "t1_low": 4.47,
+      "t1_close": 4.51,
+      "return_pct": -0.44,
+      "max_return_pct": 0.44,
+      "max_drawdown_pct": -1.32,
+      "alpha_vs_bench": 0.16
+    },
+    {
+      "stock_code": "002011",
+      "stock_name": "盾安环境",
+      "score": 33.0,
+      "t_close": 10.86,
+      "t1_open": 11.15,
+      "t1_high": 11.56,
+      "t1_low": 10.9,
+      "t1_close": 10.92,
+      "return_pct": 0.55,
+      "max_return_pct": 6.45,
+      "max_drawdown_pct": 0.37,
+      "alpha_vs_bench": 1.15
+    }
+  ]
+}

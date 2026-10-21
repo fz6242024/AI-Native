@@ -197,9 +197,33 @@ def test_empty_themes_skips_block(notifier):
 
     without = _build(notifier)
     card = _build(notifier, empty)
-
-    assert THEME_TITLE not in json.dumps(card, ensure_ascii=False), "themes 为空时应跳过题材块"
+    assert THEME_TITLE not in json.dumps(card, ensure_ascii=False)
     assert len(without["card"]["elements"]) == len(card["card"]["elements"])
+
+
+# ------------------------------------------------------------
+# 5. 进度条与评分梯队展示测试
+# ------------------------------------------------------------
+
+def test_render_progress_bar(notifier):
+    assert notifier._render_progress_bar(100, width=10) == "[██████████]"
+    assert notifier._render_progress_bar(0, width=10) == "[░░░░░░░░░░]"
+    assert notifier._render_progress_bar(50, width=10) == "[█████░░░░░]"
+    assert notifier._render_progress_bar(86, width=10) == "[█████████░]"
+    assert notifier._render_progress_bar("invalid") == "—"
+
+
+def test_build_card_message_contains_ladder(notifier):
+    results = [
+        {"stock_code": "601668", "stock_name": "中国建筑", "final_score": 86},
+        {"stock_code": "002487", "stock_name": "大金重工", "final_score": 79},
+        {"stock_code": "002011", "stock_name": "盾安环境", "final_score": 33},
+    ]
+    card = notifier.build_card_message(results)
+    raw = json.dumps(card, ensure_ascii=False)
+    assert "候选标的评分梯队直观总览" in raw
+    assert "中国建筑" in raw and "大金重工" in raw
+    assert "[████████" in raw
 
 
 # ------------------------------------------------------------

@@ -44,6 +44,9 @@ log.info(log_debug_msg)
 # 解析链见 scripts/llm_config.py：支持 LLM_CHANNELS 渠道风格 / LLM_MY_PROXY_* /
 # LLM_BASE_URL / OPENAI_* 兜底，避免只认一种风格导致「线上能走通、本机跑不通」。
 from llm_config import resolve_llm_config, apply_llm_env
+# 全局限速 + 429 退避（唯一真相源）。初选流程唯一的那次 LLM 排序必须经过它，
+# 才能在免费档「约 1 次/分钟」的额度下不连环 429。
+from llm_rate_limit import call_with_retry, describe_stats, is_rate_limit_error
 
 # 关键：必须把解析结果导出到 os.environ（在任何 screen() 调用之前）。
 # 本脚本并不自己调 LLM —— 真正决定能否跑通的是第三方库 alphasift 内部的解析：
@@ -133,11 +136,28 @@ BLUE_CHIP_STRATEGIES = {"blue_chip_income", "low_volatility_quality"}
 BLUE_CHIP_MARKET_CAP = 500 * 10 ** 8   # 单位：元 —— 快照 total_mv 就是元（采集端已 ×1e8）
 BLUE_CHIP_LIMIT = 2
 
+# 防御型策略集合：在市场震荡弱势期，具有抗跌、稳健价值与低波动属性
+DEFENSIVE_STRATEGIES = {"blue_chip_income", "low_volatility_quality", "quality_value"}
+
 # 防御性代码前缀黑名单：创业板(300/301) / 科创板(688/689) / 北交所(8x/4x)。
 # 用户是 A 股新股民，不能买创业板。采集层 snapshot_collector 的 MAIN_BOARD_PREFIXES
 # 已经挡掉了（当前快照 3496 支里 300/301 共 0 支），这里保留一道过滤，
 # 防止以后有人放开采集前缀而选股侧毫无察觉。
 EXCLUDED_CODE_PREFIXES = ("300", "301", "688", "689", "8", "4")
+
+# ---------- 全局 LLM 排序的排序提示 ----------
+# 这是初选流程中**唯一**一次 LLM 调用的提示词，只做「候选池内相对排序」。
+# 必须自己写，不能照抄某个策略的提示词：那些提示词是给 L1 因子筛选配套的，
+# 口径与最终持仓风格（短线热点 + 小盘弹性 + 成长 + 主板）不一致。
+_GLOBAL_RANKING_HINTS = (
+    "用户是 A 股散户、新股民，账户不能买入创业板（300/301）、科创板（688/689）"
+    "与北交所股票。偏好短线热点题材、小盘弹性与成长股，主板优先；"
+    "回避银行、ST/退市风险股与高价股。"
+    "请在给定候选池内做相对排序：优先题材热度与资金关注度，其次是成长性与弹性；"
+    "同等条件下主板小盘优先、大市值蓝筹靠后；"
+    "警惕短线连续冲高超买、高位放量滞涨的标的，防范追高接盘风险。"
+    "不得推荐候选池以外的股票，不得修改筛选条件，不得给出目标价或收益承诺。"
+)
 
 
 def _build_market_cap_map(df) -> dict:
@@ -628,24 +648,161 @@ def _apply_history_weight(stocks: list, history: dict) -> list:
       - 历史均分以 70 分为中性线：高于 70 加分、低于 70 减分，每偏离 1 分影响 0.6 分
       - 同一股票被深度评分 >= 3 次视为持续表现，加减分再加强 20%
       - 没有历史评分的股票保持本次初选分不变
+      - 若股票已带防御加权或短线乖离调整，在重算时保持其附加效果
     返回：在原字典上附加 combined_score / hist_avg / hist_count 字段。
     """
     if not history:
         for s in stocks:
-            s["combined_score"] = float(s.get("score", 0))
+            extra = float(s.get("defensive_bonus", 0.0)) - float(s.get("bias_penalty", 0.0))
+            s["combined_score"] = round(float(s.get("score", 0)) + extra, 4)
         return stocks
     for s in stocks:
         info = history.get(s.get("code"))
         base = float(s.get("score", 0))
+        extra = float(s.get("defensive_bonus", 0.0)) - float(s.get("bias_penalty", 0.0))
         if info:
             bonus = (info["avg"] - 70.0) * 0.6
             if info["count"] >= 3:
                 bonus *= 1.2
-            s["combined_score"] = round(base + bonus, 4)
+            s["combined_score"] = round(base + bonus + extra, 4)
             s["hist_avg"] = round(info["avg"], 2)
             s["hist_count"] = info["count"]
         else:
-            s["combined_score"] = base
+            s["combined_score"] = round(base + extra, 4)
+    return stocks
+
+
+def _build_snapshot_metrics_map(df_or_payload) -> dict[str, dict]:
+    """从快照 DataFrame 或字典提取各股票的量价与估值指标。
+
+    提取字段：
+      - change_pct: 当日涨跌幅(%)
+      - turnover_rate: 当日换手率(%)
+      - pe_ratio: 市盈率
+      - pb_ratio: 市净率
+      - total_mv: 总市值(元)
+    返回：{code: metrics_dict}
+    """
+    if df_or_payload is None:
+        return {}
+    metrics = {}
+    try:
+        if hasattr(df_or_payload, "iterrows"):
+            for _, row in df_or_payload.iterrows():
+                code = str(row.get("code", "")).strip()
+                if not code or code == "nan":
+                    continue
+                metrics[code] = {
+                    "change_pct": float(row.get("change_pct", 0.0) or 0.0),
+                    "turnover_rate": float(row.get("turnover_rate", 0.0) or 0.0),
+                    "pe_ratio": float(row.get("pe_ratio", 0.0) or 0.0),
+                    "pb_ratio": float(row.get("pb_ratio", 0.0) or 0.0),
+                    "total_mv": float(row.get("total_mv", 0.0) or 0.0),
+                }
+        elif isinstance(df_or_payload, dict):
+            for row in df_or_payload.get("stocks", []):
+                code = str(row.get("code", "")).strip()
+                if not code:
+                    continue
+                metrics[code] = {
+                    "change_pct": float(row.get("change_pct", 0.0) or 0.0),
+                    "turnover_rate": float(row.get("turnover_rate", 0.0) or 0.0),
+                    "pe_ratio": float(row.get("pe_ratio", 0.0) or 0.0),
+                    "pb_ratio": float(row.get("pb_ratio", 0.0) or 0.0),
+                    "total_mv": float(row.get("total_mv", 0.0) or 0.0),
+                }
+    except Exception as e:
+        log.warning("  构建快照指标映射失败: %s", e)
+    return metrics
+
+
+def _apply_defensive_factor_weight(stocks: list, metrics_map: dict | None = None) -> list:
+    """对具备稳健防御属性（低波/价值/高股息策略来源、低估值安全边际、合理换手）的标的赋予防御加分。
+
+    规则：
+      1. 策略防御属性：来自 DEFENSIVE_STRATEGIES（low_volatility_quality, quality_value, blue_chip_income）加 2.0 分；
+      2. 低估值安全边际：0 < PE <= 25.0 且 0 < PB <= 2.5 加 2.0 分；
+      3. 筹码适度温和：0.5% <= 换手率 <= 5.0%（非游资爆炒标的）加 1.0 分；
+      单股防御加成封顶 5.0 分。
+    返回：在原字典上更新 combined_score，附加 defensive_bonus / defensive_tags。
+    """
+    metrics_map = metrics_map or {}
+    for s in stocks:
+        code = str(s.get("code", ""))
+        strat = s.get("strategy", "")
+        m = metrics_map.get(code, {})
+        pe = float(s.get("pe_ratio", m.get("pe_ratio", 0.0)) or 0.0)
+        pb = float(s.get("pb_ratio", m.get("pb_ratio", 0.0)) or 0.0)
+        turnover = float(s.get("turnover_rate", m.get("turnover_rate", 0.0)) or 0.0)
+
+        bonus = 0.0
+        tags = []
+        if strat in DEFENSIVE_STRATEGIES:
+            bonus += 2.0
+            tags.append(f"防御策略({strat})")
+        if 0.0 < pe <= 25.0 and 0.0 < pb <= 2.5:
+            bonus += 2.0
+            tags.append(f"低估值安全边际(PE={pe:.1f},PB={pb:.1f})")
+        if 0.5 <= turnover <= 5.0:
+            bonus += 1.0
+            tags.append(f"筹码温和(换手={turnover:.1f}%)")
+
+        bonus = min(bonus, 5.0)
+        old_bonus = float(s.get("defensive_bonus", 0.0))
+        cur_combined = float(s.get("combined_score", s.get("score", 0.0)))
+        s["combined_score"] = round(cur_combined - old_bonus + bonus, 4)
+        s["defensive_bonus"] = round(bonus, 2)
+        s["defensive_tags"] = tags
+    return stocks
+
+
+def _apply_short_term_bias_penalty(stocks: list, metrics_map: dict | None = None) -> list:
+    """对短线涨幅乖离过大、处于超买高位或高位博弈过热的标的施加扣分，防追高接盘。
+
+    规则（针对实盘冲高回落痛点针对性调优）：
+      1. 当日/短线急涨超买惩罚：
+         - 涨幅 >= 9.0%（冲板/逼近涨停，次日易冲高出货）：扣 8.0 分；
+         - 7.0% <= 涨幅 < 9.0%（短期偏离均线过大）：扣 5.0 分；
+         - 5.0% <= 涨幅 < 7.0%（温和超买脉冲）：扣 2.0 分；
+      2. 筹码高位剧烈博弈惩罚：
+         - 换手率 >= 20.0%（极端高换手，筹码严重松动）：扣 3.0 分；
+         - 15.0% <= 换手率 < 20.0% 且涨幅 >= 5.0%（放量拉升加速见顶风险）：扣 1.5 分；
+      单股乖离扣分封顶 10.0 分。
+    返回：在原字典上更新 combined_score，附加 bias_penalty / bias_reasons。
+    """
+    metrics_map = metrics_map or {}
+    for s in stocks:
+        code = str(s.get("code", ""))
+        m = metrics_map.get(code, {})
+        chg = float(s.get("change_pct", m.get("change_pct", 0.0)) or 0.0)
+        turnover = float(s.get("turnover_rate", m.get("turnover_rate", 0.0)) or 0.0)
+
+        penalty = 0.0
+        reasons = []
+
+        if chg >= 9.0:
+            penalty += 8.0
+            reasons.append(f"单日脉冲逼近涨停(+{chg:.1f}%)")
+        elif chg >= 7.0:
+            penalty += 5.0
+            reasons.append(f"短线涨幅偏大(+{chg:.1f}%)")
+        elif chg >= 5.0:
+            penalty += 2.0
+            reasons.append(f"短线偏离均线(+{chg:.1f}%)")
+
+        if turnover >= 20.0:
+            penalty += 3.0
+            reasons.append(f"换手过热高位博弈({turnover:.1f}%)")
+        elif turnover >= 15.0 and chg >= 5.0:
+            penalty += 1.5
+            reasons.append(f"放量加速换手高({turnover:.1f}%)")
+
+        penalty = min(penalty, 10.0)
+        old_penalty = float(s.get("bias_penalty", 0.0))
+        cur_combined = float(s.get("combined_score", s.get("score", 0.0)))
+        s["combined_score"] = round(cur_combined + old_penalty - penalty, 4)
+        s["bias_penalty"] = round(penalty, 2)
+        s["bias_reasons"] = reasons
     return stocks
 
 
@@ -698,6 +855,131 @@ def _fetch_and_cache_snapshot(output_file: str):
     except Exception as e:
         log.warning("快照获取失败: %s，将使用 fallback", e)
         return None
+
+
+def _global_llm_rank(stocks: list, enabled: bool) -> list:
+    """对最终候选清单做一次全局 LLM 排序 —— 整条初选流程唯一的一次 LLM 调用。
+
+    为什么放在流程最末端、且只调用一次：
+      - 调用次数与策略数解耦，恒为 1 次（旧实现是 9 个策略各调一次，背靠背连发，
+        在免费档「约 1 次/分钟」下必然全部 429，纯属浪费）；
+      - 输入只是最终候选（默认上限 8 支），提示词小，不会触发 alphasift 历史上
+        「30 候选 × 15 字段超 8192 token → finish_reason=length」的截断问题；
+      - 蓝筹闸门（_cap_blue_chips）与历史加权（_apply_history_weight）都已跑完，
+        本次排序只在其结果之上重排，不改变它们的评分口径。
+
+    失败（限流耗尽 / JSON 解析失败 / 覆盖不足等）时只打 warning 并保持原顺序，
+    绝不中断初选流程；rank_candidates 自身也会退回 screen_score 顺序。
+
+    返回新的列表（原地复用同一批 dict 对象，键结构不变）。
+    """
+    if not stocks or not enabled:
+        return stocks
+
+    try:
+        from alphasift.models import Pick
+        from alphasift.ranker import rank_candidates_with_metadata
+    except Exception as e:  # noqa: BLE001 - 导入失败不应中断初选
+        log.warning("  全局 LLM 排序不可用（导入 alphasift.ranker 失败）: %s，保持原顺序", e)
+        return stocks
+
+    try:
+        max_candidates = int(os.environ.get("LLM_MAX_CANDIDATES", "8"))
+    except (TypeError, ValueError):
+        max_candidates = 8
+    max_candidates = max(max_candidates, 1)
+
+    # 只把前 N 支送去排序，其余保持原序追加在后 —— 复用既有的防截断配置。
+    head = stocks[:max_candidates]
+    tail = stocks[max_candidates:]
+
+    # dict -> Pick。screen_score 取 combined_score（含历史加权），使 LLM 排序是
+    # 「叠在既有评分之上」而非另起炉灶；final_score 同值，作为未覆盖时的兜底。
+    picks = []
+    for i, s in enumerate(head, start=1):
+        base = float(s.get("combined_score", s.get("score", 0)))
+        picks.append(Pick(
+            rank=i,
+            code=str(s.get("code", "")),
+            name=str(s.get("name", "")),
+            final_score=base,
+            screen_score=base,
+        ))
+
+    log.info("发起全局 LLM 排序：本次初选仅此 1 次 LLM 调用，候选 %d 支（上限 %d）",
+             len(head), max_candidates)
+
+    # 模型名必须带 provider 前缀（如 openai/agnes-2.0-flash）：litellm 在客户端就要求
+    # 能识别 provider，否则直接抛 "LLM Provider NOT provided"，根本发不出请求。
+    # llm_config 返回的是裸模型名，这里复用 alphasift 自己的解析（与 pipeline 里
+    # 真正跑通的那条路径同源），拿不到时退化为给裸名补 openai/ 前缀。
+    llm_model, llm_base_url, llm_api_key = LLM_MODEL, LLM_BASE_URL, LLM_API_KEY
+    try:
+        from alphasift.config import Config as _AlphaConfig
+        _cfg = _AlphaConfig.from_env()
+        llm_model = _cfg.llm_model or llm_model
+        llm_base_url = _cfg.llm_base_url or llm_base_url
+        llm_api_key = _cfg.llm_api_key or llm_api_key
+    except Exception as e:  # noqa: BLE001 - 解析失败不应中断初选
+        log.warning("  复用 alphasift 配置解析失败: %s，回退 llm_config 的值", e)
+
+    # 前缀归一化必须放在 try/except **之外**：不论模型名来自 alphasift 还是 llm_config，
+    # 只要没有 provider 前缀就补 openai/。litellm 在客户端就要求能识别 provider，
+    # 裸名（如 agnes-2.0-flash）会直接抛 "LLM Provider NOT provided"，请求根本发不出去。
+    if llm_model and "/" not in llm_model:
+        llm_model = f"openai/{llm_model}"
+
+    def _call():
+        # max_retries=0：保证单次尝试只发 1 次 HTTP 请求。alphasift 内部的 coverage
+        # 重试会额外发请求，与「只调 1 次」的目标冲突；限流重试交给外层 call_with_retry。
+        res = rank_candidates_with_metadata(
+            picks,
+            _GLOBAL_RANKING_HINTS,
+            llm_api_key,
+            llm_model,
+            llm_base_url,
+            rank_weight=0.40,
+            max_retries=0,
+            max_tokens=4096,
+            timeout_sec=120.0,
+        )
+        # 关键：alphasift 会把限流异常吞掉、返回 ranked=False 的降级结果，外层
+        # call_with_retry 就看不到异常、也就无从退避。这里把限流类错误重新抛出，
+        # 让 429 退避真正生效；非限流失败（JSON 解析/覆盖不足等）保持原样降级。
+        if not res.ranked:
+            err_text = "; ".join(res.errors or [])
+            if err_text and is_rate_limit_error(RuntimeError(err_text)):
+                raise RuntimeError(err_text)
+        return res.picks
+
+    try:
+        ranked = call_with_retry(_call, label="初选全局排序")
+    except Exception as e:  # noqa: BLE001 - 任何异常都优雅降级，保持原顺序
+        log.warning("  全局 LLM 排序失败: %s，保持原有顺序", e)
+        return stocks
+
+    # Pick -> dict：按 LLM 排序后的 code 顺序重排，并把混合分写回 combined_score，
+    # 让「排序键 = 展示键」继续成立（_log_summary / 下游 JSON 都依赖 combined_score）。
+    by_code = {str(s.get("code", "")): s for s in head}
+    ordered = []
+    seen_codes = set()
+    for p in ranked:
+        code = str(p.code)
+        s = by_code.get(code)
+        if s is None or code in seen_codes:
+            continue
+        seen_codes.add(code)
+        s["combined_score"] = round(float(p.final_score), 4)
+        ordered.append(s)
+    # 补回 LLM 未覆盖的候选，保持它们的相对顺序。
+    for s in head:
+        if str(s.get("code", "")) not in seen_codes:
+            ordered.append(s)
+
+    log.info("全局 LLM 排序完成，已按 LLM 结果重排 %d 支候选", len(ordered))
+    # 尾部候选（未送 LLM）保持各自 combined_score，与已重排的头部一起再排一次，
+    # 保证「排序键 = 展示键」在整份清单上继续成立（_log_summary / P0-3 依赖）。
+    return sorted(ordered + tail, key=lambda s: s.get("combined_score", 0), reverse=True)
 
 
 def discover_stocks(output_file: str, strategy: str = None, use_llm: bool = True, stock_filter: str = None):
@@ -787,13 +1069,23 @@ def discover_stocks(output_file: str, strategy: str = None, use_llm: bool = True
             log.warning("写入 alphasift 缓存失败: %s", e)
         log.info("本地快照含完整因子，转 alphasift 格式走真实多因子打分")
 
+    # 快照指标提取：用于蓝筹市值判定、防御因子加权与短线涨幅乖离惩罚
+    cap_source = raw_local_df if raw_local_df is not None else _cached_snapshot_df
+    market_cap_map = _build_market_cap_map(cap_source)
+    metrics_map = _build_snapshot_metrics_map(cap_source)
+    if metrics_map:
+        log.info("从快照提取了 %d 支股票的实时指标（涨幅/换手/估值），用于短线乖离惩罚与防御加权", len(metrics_map))
+
     # 尝试 AlphaSift 真实初选
     if _ensure_alphasift_available() and (not use_local_snapshot or local_snapshot_full):
         try:
             if strategy:
                 # 单策略模式（兼容旧用法）
+                # use_llm=False：策略层不做 LLM 排序。旧实现每个策略各调一次 LLM，
+                # 9 个策略背靠背连发，在免费档「约 1 次/分钟」下必然全部 429。
+                # 现在改为流程末端只做一次全局 LLM 排序（见 _global_llm_rank）。
                 stocks = _run_alphasift_screen(
-                    strategy, top_n=10, use_llm=use_llm_rank, snapshot_df=_cached_snapshot_df
+                    strategy, top_n=10, use_llm=False, snapshot_df=_cached_snapshot_df
                 )
                 if stocks:
                     log.info("AlphaSift 真实初选完成，选出 %d 支股票", len(stocks))
@@ -804,15 +1096,18 @@ def discover_stocks(output_file: str, strategy: str = None, use_llm: bool = True
                 used_codes = set()
                 all_stocks = []
                 for strat_name in STRATEGIES:
-                    picks = _run_alphasift_screen(strat_name, top_n=10, use_llm=use_llm_rank,
+                    # use_llm=False：策略层纯靠因子分选择，循环内 0 次 LLM 调用。
+                    picks = _run_alphasift_screen(strat_name, top_n=10, use_llm=False,
                                                    snapshot_df=_cached_snapshot_df)
 
                     if not picks:
                         log.warning("  [%s] 未选出股票，跳过", strat_name)
                         continue
 
-                    # 先收集该策略所有合格候选（非银行/ST）进候选池，再取第一个未被占用的
+                    # 先收集该策略所有合格候选（非银行/ST）进候选池，结合历史评分、防御加权与乖离调整，再取第一个未被占用的
                     picks = _apply_history_weight(picks, history)
+                    picks = _apply_defensive_factor_weight(picks, metrics_map)
+                    picks = _apply_short_term_bias_penalty(picks, metrics_map)
                     picked = None
                     for pick in sorted(picks, key=lambda x: x.get("combined_score", 0), reverse=True):
                         code = pick["code"]
@@ -904,16 +1199,25 @@ def discover_stocks(output_file: str, strategy: str = None, use_llm: bool = True
     # 必须放在 _filter_stocks **之前** —— 回填候选是从 candidate_pool 拿的，
     # 那批票还没过 ST/银行/高价股过滤，放到后面会绕过过滤。
     cap_source = raw_local_df if raw_local_df is not None else _cached_snapshot_df
-    stocks = _cap_blue_chips(stocks, _build_market_cap_map(cap_source), candidate_pool)
+    market_cap_map = _build_market_cap_map(cap_source)
+    metrics_map = _build_snapshot_metrics_map(cap_source)
+    stocks = _cap_blue_chips(stocks, market_cap_map, candidate_pool)
 
     stocks = _filter_stocks(stocks)
     stocks = stocks[:10]
 
-    # 结合历史深度评分：高分优先、低分降权，按综合分排序
+    # 结合历史深度评分、防御因子加权与短线涨幅乖离惩罚：高分优先、低分降权，按综合分排序
     stocks = _apply_history_weight(stocks, history)
+    stocks = _apply_defensive_factor_weight(stocks, metrics_map)
+    stocks = _apply_short_term_bias_penalty(stocks, metrics_map)
     hit = sum(1 for s in stocks if "hist_avg" in s)
-    log.info("结合历史深度评分，命中 %d/%d 支，已按综合分排序", hit, len(stocks))
+    log.info("结合历史深度评分与防御/乖离调优，历史命中 %d/%d 支，已按综合分排序", hit, len(stocks))
     stocks = sorted(stocks, key=lambda s: s.get("combined_score", 0), reverse=True)
+
+    # 全局 LLM 排序：整条初选流程**唯一**一次 LLM 调用，必须放在上面那次
+    # combined_score 重排**之后** —— 否则它辛苦算出的顺序会被重排冲掉。
+    # 它只调整顺序、并把混合分写回 combined_score，不改变蓝筹闸门/历史加权的评分口径。
+    stocks = _global_llm_rank(stocks, use_llm_rank)
 
     # 保存为 JSON (include all fields including strategy)
     with open(output_file, "w", encoding="utf-8") as f:
@@ -928,6 +1232,9 @@ def discover_stocks(output_file: str, strategy: str = None, use_llm: bool = True
 
     # 打印摘要（与排序口径一致：主数字用 combined_score，即真正的排序键）
     _log_summary(stocks)
+
+    # 让限速等待时间可见：调用次数越少，这行数字越小、总耗时越短。
+    log.info(describe_stats())
 
 
 def _log_summary(stocks: list) -> None:
@@ -947,8 +1254,14 @@ def _log_summary(stocks: list) -> None:
         hist = ""
         if "hist_avg" in s:
             hist = f"  历史均分: {s['hist_avg']:.2f}({s['hist_count']}次)"
-        log.info("  %d. %s (%s)  综合: %.4f (初选: %.4f)%s  [策略: %s]",
-                 i, name, code, combined, score, hist, strat)
+        adj = []
+        if s.get("defensive_bonus"):
+            adj.append(f"防御+{s['defensive_bonus']:.1f}")
+        if s.get("bias_penalty"):
+            adj.append(f"乖离-{s['bias_penalty']:.1f}")
+        adj_str = f" [{', '.join(adj)}]" if adj else ""
+        log.info("  %d. %s (%s)  综合: %.4f (初选: %.4f)%s%s  [策略: %s]",
+                 i, name, code, combined, score, hist, adj_str, strat)
     log.info("-" * 40)
     log.info("初选完成！共选出 %d 支股票。", len(stocks))
 

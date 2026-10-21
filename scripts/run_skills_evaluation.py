@@ -35,6 +35,24 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 log.info(log_debug_msg)
 
+# ---------- 接入全局限速（llm_rate_limit.py 与本脚本一起部署到 B/C）----------
+# 必须在 .env 加载之后导入：llm_rate_limit 在导入时读取 LLM_RPM_LIMIT 等变量。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from llm_rate_limit import (  # noqa: E402 - 依赖上面的 .env 加载，故意延后
+    call_with_retry,
+    describe_stats,
+    is_rate_limit_error,
+)
+
+# 合并调用未返回 report 时，是否允许再补一次 LLM 报告调用。
+# 默认关闭：免费档速率约 1 次/分钟，补报告会让「每股 1 次」退化成 2 次，
+# 因此默认改用本地模板报告（0 次额外调用）。确需模型版报告时设 LLM_REPORT_FALLBACK=1。
+ENABLE_LLM_REPORT_FALLBACK = os.environ.get("LLM_REPORT_FALLBACK", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
 # ---------- 从 .env 读取 LLM 配置 ----------
 # 优先检查 LLM_CHANNELS 渠道配置
 LLM_CHANNELS = os.environ.get("LLM_CHANNELS", "")
@@ -154,8 +172,35 @@ def _is_evaluation_reliable(skill_total: int, skill_returned: int, llm_failed_co
     return True
 
 
+def _failed_skill_result(stock_code: str, skill_key: str, reason: str) -> dict:
+    """构造一条「失败」占位结果（score=50）。
+
+    reason 必须以「调用失败」开头，才能被 _count_failed / 可靠性判定识别。
+    """
+    return {
+        "stock_code": stock_code,
+        "skill_executed": skill_key,
+        "skill_name": SKILLS_CONFIG.get(skill_key, {}).get("name", skill_key),
+        "score": 50,
+        "judgment": reason,
+        "core_risk": "LLM调用异常",
+    }
+
+
+def _count_failed(skill_results: list) -> int:
+    """统计「调用失败」的 Skill 数（与历史口径一致：score=50 且 judgment 含『调用失败』）。"""
+    return sum(
+        1 for r in skill_results
+        if r.get("score") == 50 and "调用失败" in r.get("judgment", "")
+    )
+
+
 def call_skill_llm(stock_code: str, stock_name: str, skill_key: str) -> dict:
-    """调用 LLM 执行单个 Skill 的评估。"""
+    """调用 LLM 执行单个 Skill 的评估。
+
+    ⚠️ 限流（429）重试耗尽后会**向上抛出**，由调用方（19 次兜底循环）决定是否中止；
+    其他异常（如 JSON 解析失败）仍按原逻辑降级为 50 分占位结果。
+    """
     config = SKILLS_CONFIG[skill_key]
     skill_name = config["name"]
     
@@ -166,16 +211,19 @@ def call_skill_llm(stock_code: str, stock_name: str, skill_key: str) -> dict:
         from openai import OpenAI
         
         client = OpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
-        
-        response = client.chat.completions.create(
-            model=LLM_MODEL,
-            messages=[
-                {"role": "system", "content": "你是一个专业的A股投研分析师。请严格按要求的JSON格式输出评估结果，不要输出其他内容。"},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.3,
-            max_tokens=500,
-        )
+
+        def _request():
+            return client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=[
+                    {"role": "system", "content": "你是一个专业的A股投研分析师。请严格按要求的JSON格式输出评估结果，不要输出其他内容。"},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.3,
+                max_tokens=500,
+            )
+
+        response = call_with_retry(_request, label="单Skill")
         
         content = response.choices[0].message.content.strip()
         
@@ -196,6 +244,9 @@ def call_skill_llm(stock_code: str, stock_name: str, skill_key: str) -> dict:
         }
         
     except Exception as e:
+        # 限流异常必须向上抛出：调用方据此立即中止 19 次兜底，避免放大 429。
+        if is_rate_limit_error(e):
+            raise
         log.warning("Skill [%s] 调用失败 (%s): %s", skill_name, stock_code, e)
         return {
             "stock_code": stock_code,
@@ -207,18 +258,21 @@ def call_skill_llm(stock_code: str, stock_name: str, skill_key: str) -> dict:
         }
 
 
-def call_all_skills_llm(stock_code: str, stock_name: str) -> list:
-    """一次 LLM 请求评估全部 19 个 Skills，返回与 call_skill_llm 兼容的结果列表。
+def call_all_skills_llm(stock_code: str, stock_name: str) -> tuple:
+    """一次 LLM 请求同时拿到全部 19 个 Skill 结果与详细报告。
 
-    Free tier 优化：将 19 次独立请求合并为 1 次，大幅降低 Rate Limit 触发概率。
-    输出 token 配额设计（agnes-2.0-flash Free tier）：
-      - 单 Skill judgment  ≤ 80 字（约 120 token）
-      - 单 Skill core_risk ≤ 40 字（约 60 token）
-      - 19 Skill 合计     ≤ 3,800 token
-      - max_tokens 设为 4096，留有余量
-    失败时返回空列表，调用方 fallback 到 19 次单独调用。
+    Free tier 优化：把原来的「1 次合并 Skills + 1 次详细报告」压成 **1 次调用**，
+    返回 (skill_results, report)：
+      - skill_results：与 call_skill_llm 兼容的结果列表（漏掉的 Skill 用默认值补全）
+      - report：详细报告 dict（与 generate_detailed_report 兼容）；模型未返回则 None
+
+    失败语义（关键，防止 429 被放大）：
+      - **限流（429）重试耗尽 → 向上抛出**，调用方绝不能改发 19 次单独请求；
+      - 其他失败（如 JSON 解析不了）→ 返回 ([], None)，调用方 fallback 到 19 次。
+
+    输出 token 配额设计：19 个 Skill（judgment ≤80 字 / core_risk ≤40 字）
+    约 3,800 token，加详细报告约 2,000 token，max_tokens 设 8192 留足余量。
     """
-    skill_names = [cfg["name"] for cfg in SKILLS_CONFIG.values()]
     skill_keys = list(SKILLS_CONFIG.keys())
 
     # 构建每个 Skill 的独立 prompt（替换模板变量）
@@ -228,23 +282,50 @@ def call_all_skills_llm(stock_code: str, stock_name: str) -> list:
         prompt_text = cfg["prompt"].format(code=stock_code, name=stock_name)
         skill_prompts.append((key, cfg["name"], prompt_text))
 
-    # 拼接所有 Skill 的 prompt，并明确要求 LLM 输出 JSON 数组
+    # 拼接所有 Skill 的 prompt，并明确要求 LLM 输出 JSON 对象
     sections = []
     for idx, (key, name, prompt_text) in enumerate(skill_prompts, 1):
         sections.append(f"--- Skill {idx}: {name} (key: {key}) ---\n{prompt_text}")
     all_prompts = "\n\n".join(sections)
 
-    output_format = """请对以上每个 Skill 分别输出评估结果，格式为 JSON 数组，每个元素结构如下：
-[
-  {
-    "skill_key": "key值",
-    "skill_name": "Skill名称",
-    "score": 0-100的整数,
-    "judgment": "80字以内的判断说明",
-    "core_risk": "40字以内的核心风险"
-  }
-]
-严格输出 JSON 数组，不要输出任何其他文字。"""
+    output_format = f"""请对以上每个 Skill 分别评估，并据此撰写一份详细投资分析报告，一次性输出如下 JSON 对象：
+{{
+  "skills": [
+    {{
+      "skill_key": "key值",
+      "skill_name": "Skill名称",
+      "score": 0-100的整数,
+      "judgment": "80字以内的判断说明",
+      "core_risk": "40字以内的核心风险"
+    }}
+  ],
+  "report": {{
+    "stock_code": "{stock_code}",
+    "stock_name": "{stock_name}",
+    "overall_score": 0-100,
+    "recommendation": "买入/增持/持有/减持/卖出",
+    "summary": "投资摘要，100字以内",
+    "sections": {{
+      "company_overview": "公司概况与投资摘要",
+      "core_competitiveness": "核心竞争力分析",
+      "financial_health": "财务健康度",
+      "industry_policy": "行业与政策环境",
+      "management_governance": "管理层与公司治理",
+      "risk_warnings": "风险提示（按严重程度排序）",
+      "valuation_advice": "估值与操作建议"
+    }},
+    "skill_scores": {{
+      "avg_score": 平均分,
+      "highest_score": {{"skill": "名称", "score": 分数}},
+      "lowest_score": {{"skill": "名称", "score": 分数}},
+      "failed_count": 失败数量
+    }}
+  }}
+}}
+要求：
+1. skills 必须覆盖全部 {len(skill_keys)} 个 Skill；
+2. report.sections 各小节都要有实质内容（100~300字），不要编造不存在的数据；
+3. 严格输出该 JSON 对象，不要输出任何其他文字。"""
 
     full_prompt = f"""股票信息：{stock_name}（{stock_code}）
 
@@ -258,29 +339,43 @@ def call_all_skills_llm(stock_code: str, stock_name: str) -> list:
         from openai import OpenAI
         client = OpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
 
-        response = client.chat.completions.create(
-            model=LLM_MODEL,
-            messages=[
-                {"role": "system", "content": "你是专业的A股投研分析师。对每个 Skill 独立评估，严格按 JSON 数组格式输出，不要输出其他内容。"},
-                {"role": "user", "content": full_prompt},
-            ],
-            temperature=0.3,
-            max_tokens=4096,
-        )
+        def _request():
+            return client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=[
+                    {"role": "system", "content": "你是专业的A股投研分析师。请按 JSON 对象格式一次性输出 skills 数组与 report 报告，不要输出其他内容。"},
+                    {"role": "user", "content": full_prompt},
+                ],
+                temperature=0.3,
+                max_tokens=8192,
+            )
+
+        response = call_with_retry(_request, label="合并Skills")
 
         raw = response.choices[0].message.content.strip()
 
-        # 提取 JSON 数组
+        # 提取 JSON
         if "```json" in raw:
             raw = raw.split("```json")[1].split("```")[0].strip()
         elif "```" in raw:
             raw = raw.split("```")[1].split("```")[0].strip()
 
-        results = json.loads(raw)
-        if not isinstance(results, list):
-            raise ValueError(f"LLM 返回的不是数组: {type(results)}")
+        parsed = json.loads(raw)
+        # 兼容两种返回：新格式 {"skills": [...], "report": {...}}；旧格式裸数组
+        if isinstance(parsed, list):
+            results, report = parsed, None
+        elif isinstance(parsed, dict):
+            results = parsed.get("skills", [])
+            report = parsed.get("report")
+            if not isinstance(report, dict):
+                report = None
+        else:
+            raise ValueError(f"LLM 返回的不是对象或数组: {type(parsed)}")
 
-        # 验证并补全每个元素
+        if not isinstance(results, list):
+            raise ValueError(f"skills 字段不是数组: {type(results)}")
+
+        # 验证并补全每个 Skill 元素
         valid_results = []
         for item in results:
             if not isinstance(item, dict):
@@ -297,7 +392,10 @@ def call_all_skills_llm(stock_code: str, stock_name: str) -> list:
                 "core_risk": item.get("core_risk", "暂无风险"),
             })
 
-        log.info("合并调用成功：返回 %d/%d 个 Skill 结果", len(valid_results), len(skill_keys))
+        log.info(
+            "合并调用成功：返回 %d/%d 个 Skill 结果，report %s",
+            len(valid_results), len(skill_keys), "已包含" if report else "缺失",
+        )
 
         # 如果 LLM 漏掉了某些 Skill，用默认值补全
         returned_keys = {r["skill_executed"] for r in valid_results}
@@ -312,11 +410,14 @@ def call_all_skills_llm(stock_code: str, stock_name: str) -> list:
                     "core_risk": "LLM调用异常",
                 })
 
-        return valid_results
+        return valid_results, report
 
     except Exception as e:
-        log.warning("合并调用失败，将 fallback 到 19 次单独调用: %s", e)
-        return []
+        # 限流异常向上抛出：调用方据此跳过本次评估，**不得**改发 19 次单独请求。
+        if is_rate_limit_error(e):
+            raise
+        log.warning("合并调用失败（非限流），将 fallback 到 19 次单独调用: %s", e)
+        return [], None
 
 
 def generate_detailed_report(stock_code: str, stock_name: str, skill_results: list) -> dict:
@@ -410,16 +511,19 @@ def generate_detailed_report(stock_code: str, stock_name: str, skill_results: li
         from openai import OpenAI
         
         client = OpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
-        
-        response = client.chat.completions.create(
-            model=LLM_MODEL,
-            messages=[
-                {"role": "system", "content": "你是一位资深A股投研分析师，擅长撰写专业的投资研究报告。"},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.2,
-            max_tokens=4000,
-        )
+
+        def _request():
+            return client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=[
+                    {"role": "system", "content": "你是一位资深A股投研分析师，擅长撰写专业的投资研究报告。"},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.2,
+                max_tokens=4000,
+            )
+
+        response = call_with_retry(_request, label="详细报告")
         
         content = response.choices[0].message.content.strip()
         
@@ -450,51 +554,213 @@ def generate_detailed_report(stock_code: str, stock_name: str, skill_results: li
         }
 
 
+def _recommendation_for_score(score: int) -> str:
+    """按综合评分给出中文投资建议（与 LLM 报告口径一致）。"""
+    if score >= 80:
+        return "买入"
+    if score >= 70:
+        return "增持"
+    if score >= 60:
+        return "持有"
+    if score >= 50:
+        return "减持"
+    return "卖出"
+
+
+def build_template_report(stock_code: str, stock_name: str, skill_results: list) -> dict:
+    """本地用 Skill 结果生成模板版详细报告（**0 次额外 LLM 调用**）。
+
+    合并调用拿到 skills 但 report 缺失（如模型截断）时使用，字段与
+    generate_detailed_report 完全兼容，保证飞书卡片可正常渲染。
+    """
+    scores = [r.get("score", 50) for r in skill_results]
+    avg_score = round(sum(scores) / len(scores)) if scores else 50
+    failed_count = _count_failed(skill_results)
+    recommendation = _recommendation_for_score(avg_score)
+
+    ranked = sorted(skill_results, key=lambda r: r.get("score", 50), reverse=True)
+    highest = (
+        {"skill": ranked[0].get("skill_name", ""), "score": ranked[0].get("score", 50)}
+        if ranked else None
+    )
+    lowest = (
+        {"skill": ranked[-1].get("skill_name", ""), "score": ranked[-1].get("score", 50)}
+        if ranked else None
+    )
+
+    # 各小节基于 Skill 结果做机械归纳，不编造数据。
+    ok = [r for r in skill_results if not (r.get("score") == 50 and "调用失败" in r.get("judgment", ""))]
+    ok_desc = "；".join(f"{r['skill_name']}（{r['score']}分）" for r in ranked[:5]) or "无"
+    risk_desc = "；".join(
+        dict.fromkeys(r.get("core_risk", "") for r in skill_results if r.get("core_risk") and r["core_risk"] != "LLM调用异常")
+    ) or "暂无明确风险提示"
+    skill_detail = "\n".join(
+        f"- {r.get('skill_name', '')}：{r.get('score', 50)}分 | {r.get('judgment', '')} | 风险：{r.get('core_risk', '')}"
+        for r in skill_results
+    )
+
+    sections = {
+        "company_overview": (
+            f"{stock_name}（{stock_code}）本次经 {len(skill_results)} 个投研维度评估，"
+            f"综合评分 {avg_score} 分，投资建议：{recommendation}。"
+            f"其中 {len(ok)} 个维度正常返回，{failed_count} 个维度调用失败。"
+        ),
+        "core_competitiveness": f"评分靠前的维度：{ok_desc}。",
+        "financial_health": (
+            "财务相关维度得分已并入综合评分；因本报告为自动归纳版，"
+            "未展开逐项财务指标，请以各维度原始判断为准。"
+        ),
+        "industry_policy": (
+            "行业与政策维度结论请参见上方各维度判断；"
+            "本自动归纳版不额外引入未提供的数据。"
+        ),
+        "management_governance": (
+            "管理层与治理维度结论请参见对应 Skill 的判断与风险提示。"
+        ),
+        "risk_warnings": risk_desc,
+        "valuation_advice": f"综合评分 {avg_score} 分，建议：{recommendation}。",
+        "skill_details": skill_detail,
+    }
+
+    return {
+        "stock_code": stock_code,
+        "stock_name": stock_name,
+        "overall_score": avg_score,
+        "recommendation": recommendation,
+        "summary": (
+            f"本报告为系统根据 {len(skill_results)} 个投研维度评分结果自动归纳的版本"
+            f"（未额外调用模型）。综合评分 {avg_score} 分，建议：{recommendation}。"
+        ),
+        "sections": sections,
+        "skill_scores": {
+            "avg_score": avg_score,
+            "highest_score": highest,
+            "lowest_score": lowest,
+            "failed_count": failed_count,
+        },
+    }
+
+
+def _normalize_report(report: dict, stock_code: str, stock_name: str, skill_results: list) -> dict:
+    """用模板报告的完整骨架兜底，补齐 LLM 报告可能缺失的字段。
+
+    保证飞书卡片依赖的字段（summary / sections / skill_scores 等）永远存在，
+    同时保留 LLM 给出的内容（非空值优先）。
+    """
+    base = build_template_report(stock_code, stock_name, skill_results)
+    if not isinstance(report, dict):
+        return base
+
+    merged = dict(base)
+    for key in ("overall_score", "recommendation", "summary"):
+        if report.get(key):
+            merged[key] = report[key]
+
+    sections = dict(base["sections"])
+    for key, value in (report.get("sections") or {}).items():
+        if value:
+            sections[key] = value
+    merged["sections"] = sections
+
+    skill_scores = dict(base["skill_scores"])
+    for key, value in (report.get("skill_scores") or {}).items():
+        if value is not None:
+            skill_scores[key] = value
+    merged["skill_scores"] = skill_scores
+    return merged
+
+
+def _fallback_single_skills(stock_code: str, stock_name: str) -> list:
+    """非限流失败时的 19 次单独调用兜底。
+
+    硬上限 = Skill 总数（最多 19 次）；任一次触发限流**立即中止**剩余调用，
+    未完成的用失败占位补齐 —— 避免兜底路径本身变成 429 放大器。
+    """
+    skill_results = []
+    aborted = False
+    for idx, (key, config) in enumerate(SKILLS_CONFIG.items(), 1):
+        if aborted:
+            skill_results.append(_failed_skill_result(stock_code, key, "调用失败：兜底已中止"))
+            continue
+
+        log.info("    [%d/%d] %s...", idx, len(SKILLS_CONFIG), config["name"])
+        try:
+            result = call_skill_llm(stock_code, stock_name, key)
+        except Exception as e:
+            if is_rate_limit_error(e):
+                log.warning(
+                    "  [%s] 兜底单Skill调用触发限流，立即中止剩余 %d 个 Skill（避免放大 429）",
+                    stock_code, len(SKILLS_CONFIG) - len(skill_results),
+                )
+                aborted = True
+                skill_results.append(_failed_skill_result(stock_code, key, "调用失败：限流"))
+                continue
+            # 防御：call_skill_llm 理论上已吞掉非限流异常
+            result = _failed_skill_result(stock_code, key, f"调用失败: {str(e)[:40]}")
+
+        skill_results.append(result)
+        time.sleep(5)
+    return skill_results
+
+
 def evaluate_single_stock(stock_code: str) -> dict:
-    """对单支股票运行全部 19 个 Skills（优先合并调用，失败时 fallback）。"""
+    """对单支股票运行全部 19 个 Skills。
+
+    正常情况下**只发生 1 次 LLM 调用**（合并调用同时返回 skills + report）。
+    失败分流（防止 429 放大）：
+      - 合并调用限流重试耗尽 → 跳过本次评估，**绝不**回退成 19 次单独请求；
+      - 非限流失败（如 JSON 解析不了）→ 保留 19 次单独调用兜底（带硬上限）。
+    """
     stock_name = STOCK_NAME_MAP.get(stock_code, stock_code)
     log.info("  [%s] %s 开始评估 19 个 Skills...", stock_code, stock_name)
 
     skill_results = []
-    total_score = 0
-    failed_count = 0
+    report = None
+    rate_limited = False
 
-    # 优先尝试合并调用（1 次 LLM 请求评估全部 19 个 Skill）
-    skill_results = call_all_skills_llm(stock_code, stock_name)
+    # 优先尝试合并调用（1 次 LLM 请求同时拿到 19 个 Skill 结果 + 详细报告）
+    try:
+        skill_results, report = call_all_skills_llm(stock_code, stock_name)
+    except Exception as e:
+        if is_rate_limit_error(e):
+            rate_limited = True
+            log.error(
+                "  [%s] 合并调用限流重试耗尽，跳过本次评估"
+                "（不触发 19 次兜底，避免把 429 放大成 19 个请求）", stock_code,
+            )
+        else:
+            log.error("  [%s] 合并调用异常: %s", stock_code, e)
+        skill_results, report = [], None
 
-    if skill_results:
-        log.info("  [%s] 合并调用成功，共 %d 个 Skill 结果", stock_code, len(skill_results))
-        total_score = sum(r["score"] for r in skill_results)
-        failed_count = sum(
-            1 for r in skill_results
-            if r["score"] == 50 and "调用失败" in r.get("judgment", "")
-        )
-    else:
-        # fallback：19 次单独调用（间隔 5 秒，降低 Rate Limit 触发概率）
-        log.info("  [%s] 合并调用失败，fallback 到 19 次单独调用...", stock_code)
-        for idx, (key, config) in enumerate(SKILLS_CONFIG.items(), 1):
-            skill_name = config["name"]
-            log.info("    [%d/%d] %s...", idx, len(SKILLS_CONFIG), skill_name)
+    if rate_limited:
+        # 生成失败占位，保持输出结构完整；本次必然 reliable=false。
+        skill_results = [
+            _failed_skill_result(stock_code, key, "调用失败：限流，已跳过本次评估")
+            for key in SKILLS_CONFIG
+        ]
+    elif not skill_results:
+        # 非限流失败：保留 19 次单独调用兜底（硬上限 + 遇限流立即中止）。
+        log.info("  [%s] 合并调用非限流失败，fallback 到 19 次单独调用...", stock_code)
+        skill_results = _fallback_single_skills(stock_code, stock_name)
 
-            result = call_skill_llm(stock_code, stock_name, key)
-            skill_results.append(result)
-            total_score += result["score"]
-
-            if result["score"] == 50 and "调用失败" in result.get("judgment", ""):
-                failed_count += 1
-
-            time.sleep(5)
-
+    total_score = sum(r["score"] for r in skill_results)
+    failed_count = _count_failed(skill_results)
     avg_score = round(total_score / len(SKILLS_CONFIG)) if SKILLS_CONFIG else 50
-    
+
     sorted_skills = sorted(skill_results, key=lambda x: x["score"], reverse=True)
     highlights = [f"{s['skill_name']}（{s['score']}分）" for s in sorted_skills[:3]]
     risks = list(set(s["core_risk"] for s in skill_results if s["core_risk"] != "LLM调用异常"))
-    
-    # ========== 新增：生成详细报告 ==========
-    log.info("  [%s] 开始生成详细分析报告...", stock_code)
-    detailed_report = generate_detailed_report(stock_code, stock_name, skill_results)
-    
+
+    # 详细报告：合并调用已附带；缺失时默认本地模板生成（0 次额外 LLM 调用）。
+    if report is None:
+        if ENABLE_LLM_REPORT_FALLBACK and not rate_limited and skill_results:
+            log.info("  [%s] report 缺失，按 LLM_REPORT_FALLBACK 补一次模型报告（走限速）...", stock_code)
+            report = generate_detailed_report(stock_code, stock_name, skill_results)
+        else:
+            log.info("  [%s] report 缺失，改用本地模板报告（0 次额外 LLM 调用）", stock_code)
+            report = build_template_report(stock_code, stock_name, skill_results)
+    detailed_report = _normalize_report(report, stock_code, stock_name, skill_results)
+
     skill_total = len(SKILLS_CONFIG)
     skill_returned = len(skill_results)
     reliable = _is_evaluation_reliable(skill_total, skill_returned, failed_count)
@@ -539,8 +805,8 @@ def run_evaluation(stocks: list) -> list:
     log.info("LLM 模型: %s", LLM_MODEL)
     log.info("Skills 数量: %d", len(SKILLS_CONFIG))
     log.info("=" * 60)
-    log.info("股票数量: %d, Skills: %d, 总调用: 约 %d 次（合并优先）", len(stocks), len(SKILLS_CONFIG), len(stocks) * 2)
-    log.info("预计耗时: 约 %d 分钟（合并调用 + 详细报告）", len(stocks) * 2)
+    log.info("股票数量: %d, Skills: %d, 总调用: 约 %d 次（每股合并为 1 次）", len(stocks), len(SKILLS_CONFIG), len(stocks))
+    log.info("预计耗时: 约 %d 分钟（每股 1 次合并调用，含详细报告）", len(stocks))
     log.info("")
     
     all_results = []
@@ -557,6 +823,8 @@ def run_evaluation(stocks: list) -> list:
         status = " (部分Skill失败)" if failed > 0 else ""
         log.info("  %s (%s)  →  综合得分: %d%s", r["stock_code"], r["stock_name"], r["final_score"], status)
     log.info("=" * 60)
+    # 累计等待时间可见，便于判断免费配额是否够用
+    log.info(describe_stats())
     
     return all_results
 
@@ -622,9 +890,9 @@ def main():
   python run_skills_evaluation.py --stocks '[\"600519\",\"000858\"]'
 
 注意:
-  每支股票调用 19 次 LLM（每个 Skill 一次），每次间隔 2 秒。
-  2 支股票共 38 次调用，预计耗时约 2 分钟。
-  完成后还会额外调用 1 次 LLM 生成详细分析报告。
+  每支股票只调用 1 次 LLM（19 个 Skill 与详细报告合并为一次请求）。
+  所有调用共享进程级令牌桶限速（LLM_RPM_LIMIT，默认 1 次/分钟）。
+  合并调用限流重试耗尽时会跳过该股票，不会改发 19 次请求（避免放大 429）。
         """,
     )
     parser.add_argument("--stocks", required=True, help="股票列表 JSON 字符串")
