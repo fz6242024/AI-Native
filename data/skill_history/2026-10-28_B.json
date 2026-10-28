@@ -1,0 +1,51 @@
+{
+  "date": "2026-10-28",
+  "account": "B",
+  "results": [
+    {
+      "stock_code": "000783",
+      "stock_name": "000783",
+      "final_score": 63,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "001286",
+      "stock_name": "001286",
+      "final_score": 88,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "002222",
+      "stock_name": "002222",
+      "final_score": 75,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "600664",
+      "stock_name": "600664",
+      "final_score": 78,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "601601",
+      "stock_name": "中国太保",
+      "final_score": 80,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    }
+  ]
+}
