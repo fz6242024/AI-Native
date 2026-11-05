@@ -9,14 +9,38 @@ on:
     - cron: '30 4 * * 1-5'
   workflow_dispatch:
     inputs:
+      force_run:
+        description: '忽略交易日历强制运行'
+        type: boolean
+        required: false
+        default: false
       stocks_filter:
         description: '可选：只筛选特定股票代码（逗号分隔），留空则全量筛选'
         required: false
         default: ''
 
 jobs:
+  check-calendar:
+    name: 交易日历检查
+    runs-on: ubuntu-latest
+    outputs:
+      is_trading_day: ${{ steps.check.outputs.is_trading_day }}
+      trading_date: ${{ steps.check.outputs.trading_date }}
+      reason: ${{ steps.check.outputs.reason }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 检查是否为 A 股交易日
+        id: check
+        run: |
+          FORCE="${{ github.event.inputs.force_run }}"
+          python scripts/check_trading_day.py --force "$FORCE" --github-output "$GITHUB_OUTPUT"
+
   alpha-sift-discovery:
     name: AlphaSift 初选
+    needs: check-calendar
+    if: needs.check-calendar.outputs.is_trading_day == 'true'
     runs-on: ubuntu-latest
     env:
       PYTHONIOENCODING: utf-8
@@ -138,6 +162,9 @@ jobs:
                       return resp.status
               except urllib.error.HTTPError as e:
                   return e.code
+              except Exception as e:
+                  print(f'请求异常: {e}')
+                  return 500
 
           # 触发账户 B
           payload_b = {'inputs': {'stocks': first_json_str}, 'ref': 'master'}
@@ -165,13 +192,31 @@ jobs:
           else:
               print(f'账户 C 触发失败，HTTP 状态码: {code_c}')
 
+          has_failure = 'true' if (code_b not in (201, 204) or code_c not in (201, 204)) else 'false'
+
           # 写入 GITHUB_OUTPUT
           with open(sys.argv[5], 'a') as f:
               f.write(f'http_code_b={code_b}\\n')
               f.write(f'http_code_c={code_c}\\n')
+              f.write(f'has_trigger_failure={has_failure}\\n')
           " "$FIRST5" "$LAST5" "$GH_PAT_ACCOUNT_B" "$GH_PAT_ACCOUNT_C" "$GITHUB_OUTPUT"
 
+      - name: 触发从节点失败告警
+        if: steps.trigger-slaves.outputs.has_trigger_failure == 'true'
+        run: |
+          CODE_B="${{ steps.trigger-slaves.outputs.http_code_b }}"
+          CODE_C="${{ steps.trigger-slaves.outputs.http_code_c }}"
+          ERR_DETAIL=""
+          [ "$CODE_B" != "201" ] && [ "$CODE_B" != "204" ] && ERR_DETAIL="账户B触发失败(HTTP $CODE_B); "
+          [ "$CODE_C" != "201" ] && [ "$CODE_C" != "204" ] && ERR_DETAIL="${ERR_DETAIL}账户C触发失败(HTTP $CODE_C)"
+          python scripts/feishu_notifier.py \
+            --mode alert \
+            --node "从节点触发阶段" \
+            --error "$ERR_DETAIL" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
       - name: 收集 B/C 账户评分结果
+        id: collect-scores
         env:
           GH_PAT_ACCOUNT_B: ${{ secrets.GH_PAT_ACCOUNT_B }}
           GH_PAT_ACCOUNT_C: ${{ secrets.GH_PAT_ACCOUNT_C }}
@@ -231,3 +276,12 @@ jobs:
             --trigger-code-b "$CODE_B" \
             --trigger-code-c "$CODE_C" \
             --theme-summary data/theme_summary.json
+
+      - name: 主节点运行失败告警
+        if: failure()
+        run: |
+          python scripts/feishu_notifier.py \
+            --mode alert \
+            --node "主节点 (AlphaSift)" \
+            --error "AlphaSift 初选或主节点执行流程出现异常终止" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

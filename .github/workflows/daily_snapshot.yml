@@ -1,4 +1,4 @@
-name: 每日A股快照采集
+name: 每日A股快照采集与T+1回测
 
 permissions:
   contents: write
@@ -7,13 +7,40 @@ on:
   schedule:
     - cron: '30 7 * * 1-5'
   workflow_dispatch:
+    inputs:
+      force_run:
+        description: '忽略交易日历强制运行'
+        type: boolean
+        required: false
+        default: false
 
 jobs:
-  collect-snapshot:
-    name: 采集A股快照
+  check-calendar:
+    name: 交易日历检查
+    runs-on: ubuntu-latest
+    outputs:
+      is_trading_day: ${{ steps.check.outputs.is_trading_day }}
+      trading_date: ${{ steps.check.outputs.trading_date }}
+      reason: ${{ steps.check.outputs.reason }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 检查是否为 A 股交易日
+        id: check
+        run: |
+          FORCE="${{ github.event.inputs.force_run }}"
+          python scripts/check_trading_day.py --force "$FORCE" --github-output "$GITHUB_OUTPUT"
+
+  collect-and-backtest:
+    name: 采集快照与每日回测
+    needs: check-calendar
+    if: needs.check-calendar.outputs.is_trading_day == 'true'
     runs-on: ubuntu-latest
     env:
       PYTHONIOENCODING: utf-8
+      FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+      FEISHU_WEBHOOK_MAIN: ${{ secrets.FEISHU_WEBHOOK_MAIN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,7 +55,7 @@ jobs:
       - name: Install deps
         run: pip install requests
 
-      - name: Collect snapshot
+      - name: 采集A股快照
         run: python scripts/snapshot_collector.py
 
       - name: 发布快照到 Release
@@ -44,3 +71,29 @@ jobs:
           gh release create snapshot-latest data/snapshot_latest.json \
             --title "最新快照锚点" --prerelease --notes "主节点固定下载此 tag"
 
+      - name: 执行每日 T+1 回测
+        run: |
+          python scripts/backtest_daily_report.py --notify-feishu
+
+      - name: 提交回测结果到仓库
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add data/backtest_latest.json data/backtest_history/ data/backtest_summary.json 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "回测数据无变更，无需提交"
+          else
+            git commit -m "Daily backtest: $(date +%Y-%m-%d)"
+            GIT_EDITOR=true git pull --rebase --autostash origin master || true
+            git push || echo "::warning::回测数据推送失败"
+            echo "回测结果已提交到仓库"
+          fi
+
+      - name: 快照与回测失败告警
+        if: failure()
+        run: |
+          python scripts/feishu_notifier.py \
+            --mode alert \
+            --node "每日A股快照与回测节点" \
+            --error "每日A股快照采集或T+1回测执行失败，请查看 Actions 日志排查" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

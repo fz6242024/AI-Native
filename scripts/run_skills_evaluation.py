@@ -11,6 +11,8 @@ import logging
 import os
 import sys
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -703,7 +705,7 @@ def _fallback_single_skills(stock_code: str, stock_name: str) -> list:
     return skill_results
 
 
-def evaluate_single_stock(stock_code: str) -> dict:
+def evaluate_single_stock(stock_code: str, stock_name: str | None = None) -> dict:
     """对单支股票运行全部 19 个 Skills。
 
     正常情况下**只发生 1 次 LLM 调用**（合并调用同时返回 skills + report）。
@@ -711,7 +713,8 @@ def evaluate_single_stock(stock_code: str) -> dict:
       - 合并调用限流重试耗尽 → 跳过本次评估，**绝不**回退成 19 次单独请求；
       - 非限流失败（如 JSON 解析不了）→ 保留 19 次单独调用兜底（带硬上限）。
     """
-    stock_name = STOCK_NAME_MAP.get(stock_code, stock_code)
+    if not stock_name or stock_name == stock_code:
+        stock_name = get_stock_name(stock_code)
     log.info("  [%s] %s 开始评估 19 个 Skills...", stock_code, stock_name)
 
     skill_results = []
@@ -787,7 +790,7 @@ def evaluate_single_stock(stock_code: str) -> dict:
     }
 
 
-# ---------- 股票名称映射 ----------
+# ---------- 股票名称映射与查询 ----------
 STOCK_NAME_MAP = {
     "601288": "农业银行", "601398": "工商银行", "601166": "兴业银行",
     "601328": "交通银行", "601211": "国泰海通", "601688": "华泰证券",
@@ -795,24 +798,218 @@ STOCK_NAME_MAP = {
     "601988": "中国银行", "600519": "贵州茅台", "000858": "五粮液",
     "000001": "平安银行", "002415": "海康威视", "600900": "长江电力",
     "000333": "美的集团", "601888": "中国中免", "600276": "恒瑞医药",
+    "000651": "格力电器", "600809": "山西汾酒", "300750": "宁德时代",
+    "002714": "牧原股份", "601012": "隆基绿能", "601918": "新集能源",
+    "601668": "中国建筑", "600028": "中国石化",
 }
+
+
+def _load_snapshot_names() -> dict[str, str]:
+    """尝试从本地快照文件加载股票代码 -> 股票名称映射。"""
+    names: dict[str, str] = {}
+    candidates = [
+        Path(__file__).resolve().parent.parent / "data" / "snapshot_latest.json",
+        Path(__file__).resolve().parent.parent / "data" / "snapshot_cache.json",
+    ]
+    for p in candidates:
+        if p.is_file():
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                stocks = data.get("stocks") if isinstance(data, dict) else data
+                if isinstance(stocks, list):
+                    for s in stocks:
+                        if isinstance(s, dict) and s.get("code") and s.get("name"):
+                            names[str(s["code"]).strip().zfill(6)] = str(s["name"]).strip()
+                if names:
+                    break
+            except Exception:
+                continue
+    return names
+
+
+def fetch_stock_names(codes: list[str]) -> dict[str, str]:
+    """批量获取 A 股股票代码对应的真实中文名称（支持深市、沪市、北交所）。
+
+    采用多级保障：
+      1. 内存字典缓存（STOCK_NAME_MAP）；
+      2. 本地快照文件；
+      3. 腾讯行情接口批量查询（qt.gtimg.cn，速度快、免密、覆盖全市场）；
+      4. 新浪行情接口备用（hq.sinajs.cn）；
+      5. 兜底返回代码本身。
+    """
+    result: dict[str, str] = {}
+    to_fetch: list[str] = []
+
+    for raw_code in codes:
+        c = str(raw_code).strip()
+        if not c:
+            continue
+        code = c.zfill(6) if c.isdigit() and len(c) < 6 else c
+        if code in STOCK_NAME_MAP:
+            result[code] = STOCK_NAME_MAP[code]
+        else:
+            to_fetch.append(code)
+
+    if not to_fetch:
+        return result
+
+    # 尝试从本地快照匹配
+    snap_names = _load_snapshot_names()
+    still_missing: list[str] = []
+    for code in to_fetch:
+        if code in snap_names:
+            name = snap_names[code]
+            STOCK_NAME_MAP[code] = name
+            result[code] = name
+        else:
+            still_missing.append(code)
+
+    if not still_missing:
+        return result
+
+    # 尝试从腾讯实时行情接口批量查询
+    try:
+        query_symbols = []
+        for c in still_missing:
+            prefix = "sz" if c.startswith(("0", "3")) else ("bj" if c.startswith(("4", "8", "9")) else "sh")
+            query_symbols.append(f"{prefix}{c}")
+
+        url = f"https://qt.gtimg.cn/q={','.join(query_symbols)}"
+        req = urllib.request.Request(
+            url,
+            headers={
+                "Referer": "https://stockapp.finance.qq.com",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            text = resp.read().decode("gbk", errors="ignore")
+            for line in text.split(";"):
+                parts = line.strip().split("~")
+                if len(parts) > 2:
+                    name = parts[1].strip()
+                    code = parts[2].strip()
+                    if name and code:
+                        STOCK_NAME_MAP[code] = name
+                        result[code] = name
+    except Exception as e:
+        log.warning("腾讯行情接口查询股票名称失败: %s，尝试备用接口", e)
+
+    # 检查是否还有缺失的标的，尝试新浪接口
+    sina_missing = [c for c in still_missing if c not in result]
+    if sina_missing:
+        try:
+            query_symbols = []
+            for c in sina_missing:
+                prefix = "sz" if c.startswith(("0", "3")) else ("bj" if c.startswith(("4", "8", "9")) else "sh")
+                query_symbols.append(f"{prefix}{c}")
+            url = f"http://hq.sinajs.cn/list={','.join(query_symbols)}"
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "Referer": "https://finance.sina.com.cn",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                text = resp.read().decode("gbk", errors="ignore")
+                for line in text.strip().split("\n"):
+                    if "=" not in line:
+                        continue
+                    left, right = line.split("=", 1)
+                    sym = left.split("str_")[-1].strip()
+                    code = sym[2:] if len(sym) > 2 else sym
+                    content = right.strip('"; \r\n')
+                    if content:
+                        parts = content.split(",")
+                        if parts and parts[0].strip():
+                            name = parts[0].strip()
+                            STOCK_NAME_MAP[code] = name
+                            result[code] = name
+        except Exception as e:
+            log.warning("新浪行情接口查询股票名称失败: %s", e)
+
+    # 兜底：仍然无法获取的，回退为代码本身
+    for code in still_missing:
+        if code not in result:
+            result[code] = code
+
+    return result
+
+
+def get_stock_name(stock_code: str) -> str:
+    """获取单个股票代码的中文名称。"""
+    c = str(stock_code).strip()
+    code = c.zfill(6) if c.isdigit() and len(c) < 6 else c
+    if code in STOCK_NAME_MAP:
+        return STOCK_NAME_MAP[code]
+    names = fetch_stock_names([code])
+    return names.get(code, code)
+
+
+def normalize_stock_inputs(stocks_raw) -> list[tuple[str, str | None]]:
+    """将输入的股票参数解析归一化为 [(stock_code, stock_name_or_None), ...] 列表。
+
+    支持格式：
+      - 纯代码数组: ["600519", "000858"]
+      - 字典数组: [{"code": "600519", "name": "贵州茅台"}, ...]
+      - 包含 stock_code/stock_name 的字典数组
+      - 逗号分隔字符串: "600519,000858"
+    """
+    items: list[tuple[str, str | None]] = []
+    if isinstance(stocks_raw, str):
+        try:
+            stocks_raw = json.loads(stocks_raw)
+        except Exception:
+            stocks_raw = [s.strip() for s in stocks_raw.replace("，", ",").split(",") if s.strip()]
+
+    if not isinstance(stocks_raw, list):
+        stocks_raw = [stocks_raw]
+
+    for item in stocks_raw:
+        if isinstance(item, dict):
+            code = str(item.get("stock_code") or item.get("code") or "").strip()
+            name = item.get("stock_name") or item.get("name")
+            name_str = str(name).strip() if name else None
+            if code:
+                items.append((code, name_str))
+        elif isinstance(item, str):
+            code = item.strip()
+            if code:
+                items.append((code, None))
+    return items
 
 
 def run_evaluation(stocks: list) -> list:
     """对股票列表逐一运行 Skills。"""
+    stock_items = normalize_stock_inputs(stocks)
+    if not stock_items:
+        log.warning("没有可评估的股票标的")
+        return []
+
+    # 预先批量查询并补齐所有缺失名称的股票
+    missing_codes = [c for c, n in stock_items if not n or n == c]
+    if missing_codes:
+        fetched = fetch_stock_names(missing_codes)
+        stock_items = [
+            (c, n if n and n != c else fetched.get(c, c))
+            for c, n in stock_items
+        ]
+
     log.info("=" * 60)
     log.info("19 Skills 深度评估开始  |  %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     log.info("LLM 模型: %s", LLM_MODEL)
     log.info("Skills 数量: %d", len(SKILLS_CONFIG))
     log.info("=" * 60)
-    log.info("股票数量: %d, Skills: %d, 总调用: 约 %d 次（每股合并为 1 次）", len(stocks), len(SKILLS_CONFIG), len(stocks))
-    log.info("预计耗时: 约 %d 分钟（每股 1 次合并调用，含详细报告）", len(stocks))
+    log.info("股票数量: %d, Skills: %d, 总调用: 约 %d 次（每股合并为 1 次）", len(stock_items), len(SKILLS_CONFIG), len(stock_items))
+    log.info("预计耗时: 约 %d 分钟（每股 1 次合并调用，含详细报告）", len(stock_items))
     log.info("")
     
     all_results = []
-    for idx, stock_code in enumerate(stocks, 1):
-        log.info("--- 第 %d/%d 支 ---", idx, len(stocks))
-        result = evaluate_single_stock(stock_code)
+    for idx, (stock_code, stock_name) in enumerate(stock_items, 1):
+        log.info("--- 第 %d/%d 支: %s（%s） ---", idx, len(stock_items), stock_name, stock_code)
+        result = evaluate_single_stock(stock_code, stock_name)
         all_results.append(result)
     
     log.info("")
@@ -901,9 +1098,8 @@ def main():
     
     try:
         stocks = json.loads(args.stocks)
-    except json.JSONDecodeError as e:
-        log.error("JSON 解析失败: %s", e)
-        sys.exit(1)
+    except Exception:
+        stocks = [s.strip() for s in args.stocks.replace("，", ",").split(",") if s.strip()]
     
     if not stocks:
         log.error("股票列表为空")

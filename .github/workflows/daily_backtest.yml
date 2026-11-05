@@ -1,0 +1,72 @@
+name: T+1 投研实盘回测
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_date:
+        description: '可选：指定需要回测的报告日期（YYYY-MM-DD），留空则自动选择最近一次'
+        required: false
+        default: ''
+      notify_feishu:
+        description: '是否推送飞书看板卡片'
+        type: boolean
+        required: false
+        default: true
+
+jobs:
+  run-backtest:
+    name: 执行 T+1 实盘回测
+    runs-on: ubuntu-latest
+    env:
+      PYTHONIOENCODING: utf-8
+      FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+      FEISHU_WEBHOOK_MAIN: ${{ secrets.FEISHU_WEBHOOK_MAIN }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 安装依赖
+        run: pip install requests
+
+      - name: 运行回测
+        run: |
+          CMD="python scripts/backtest_daily_report.py"
+          if [ -n "${{ github.event.inputs.target_date }}" ]; then
+            CMD="$CMD --date ${{ github.event.inputs.target_date }}"
+          fi
+          if [ "${{ github.event.inputs.notify_feishu }}" = "true" ]; then
+            CMD="$CMD --notify-feishu"
+          fi
+          echo "执行回测命令: $CMD"
+          $CMD
+
+      - name: 提交回测结果到仓库
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add data/backtest_latest.json data/backtest_history/ data/backtest_summary.json 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "回测数据无变更，无需提交"
+          else
+            git commit -m "Manual backtest: $(date +%Y-%m-%d)"
+            GIT_EDITOR=true git pull --rebase --autostash origin master || true
+            git push || echo "::warning::回测数据推送失败"
+            echo "回测数据已成功推送到仓库"
+          fi
+
+      - name: 回测失败告警
+        if: failure()
+        run: |
+          python scripts/feishu_notifier.py \
+            --mode alert \
+            --node "T+1 实盘回测节点" \
+            --error "T+1 实盘回测任务执行失败，请检查 Actions 日志" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

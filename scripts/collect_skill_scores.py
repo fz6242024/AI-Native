@@ -8,10 +8,14 @@ import argparse
 import json
 import logging
 import os
+import sys
 import time
 import urllib.request
 import urllib.error
 from pathlib import Path
+
+# 确保可直接加载同目录下的 feishu_notifier
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,45 +48,61 @@ def _request(url: str, token: str, method: str = "GET", payload: dict | None = N
         return resp.status, json.loads(body) if body else None
 
 
-def wait_for_workflow(repo: str, token: str, timeout_minutes: int = 25) -> int | None:
-    """等待 repo 最近一次 workflow_dispatch 的 run 完成，返回 run id。
+def wait_for_workflow(repo: str, token: str, timeout_minutes: int = 25) -> tuple[int | None, str]:
+    """等待 repo 最近一次 workflow_dispatch 的 run 完成，返回 (run_id, error_reason)。
 
-    只有 conclusion 为 success 才返回 run id。此前只判 status=="completed"，
-    导致 B/C 的工作流**跑挂**也被当成"已完成"，随后下载评分历史 404 被
-    merge_and_save 静默跳过 —— 整条历史链路失效却没有任何告警。
+    只有 conclusion 为 success 才返回 (run_id, "")。
+    若失败或超时，返回 (None, error_reason)，便于主流程发起针对性的失败告警。
     """
     url = f"{API}/repos/{repo}/actions/runs?event=workflow_dispatch&per_page=20"
     deadline = time.time() + timeout_minutes * 60
+    last_run_id = None
     while time.time() < deadline:
         try:
             _, data = _request(url, token)
             runs = data.get("workflow_runs", []) if data else []
             for run in runs:
                 if run.get("path") == f".github/workflows/{WORKFLOW_NAME}" or WORKFLOW_NAME in run.get("path", ""):
+                    last_run_id = run["id"]
                     status = run.get("status")
                     conclusion = run.get("conclusion")
                     log.info("  %s run %s 状态: %s / conclusion: %s", repo, run["id"], status, conclusion)
                     if status == "completed":
                         if conclusion == "success":
-                            return run["id"]
-                        log.error(
-                            "  %s run %s 已结束但 conclusion=%s，不会产出评分历史",
-                            repo, run["id"], conclusion,
-                        )
+                            return run["id"], ""
+                        err_msg = f"Actions 运行结束但失败 (conclusion={conclusion}, run_id={run['id']})"
+                        log.error("  %s %s，不会产出评分历史", repo, err_msg)
                         print(
-                            f"::warning::{repo} 的 {WORKFLOW_NAME} 最近一次运行结论为 "
-                            f"{conclusion}，评分历史缺失，该账户本次不参与历史加权"
+                            f"::warning::{repo} 的 {WORKFLOW_NAME} 运行结论为 {conclusion}，评分历史缺失"
                         )
-                        return None
+                        return None, err_msg
                     if status in ("queued", "in_progress"):
                         break
             # 没有进行中的 run 时稍等再查
         except Exception as e:
             log.warning("  查询 %s workflow 状态失败: %s", repo, e)
         time.sleep(15)
-    log.warning("%s workflow 超时未完成", repo)
-    print(f"::warning::{repo} 的 {WORKFLOW_NAME} 等待 {timeout_minutes} 分钟仍未完成")
-    return None
+
+    err_timeout = f"等待超时超过 {timeout_minutes} 分钟仍未完成 (last_run_id={last_run_id})"
+    log.warning("%s %s", repo, err_timeout)
+    print(f"::warning::{repo} 的 {WORKFLOW_NAME} {err_timeout}")
+    return None, err_timeout
+
+
+def send_slave_alert(account: str, repo: str, error_msg: str, run_id: int | None = None) -> None:
+    """向飞书群推送从节点运行异常报警卡片。"""
+    try:
+        from feishu_notifier import build_alert_card, send_to_feishu
+        run_url = f"https://github.com/{repo}/actions/runs/{run_id}" if run_id else f"https://github.com/{repo}/actions"
+        card = build_alert_card(
+            node=f"从节点{account} ({repo})",
+            error=error_msg,
+            run_url=run_url,
+        )
+        send_to_feishu(card)
+        log.info("已向飞书发送从节点 %s 异常告警", account)
+    except Exception as e:
+        log.warning("发送从节点失败告警异常: %s", e)
 
 
 def _repo_default_branch(repo: str, token: str) -> str | None:
@@ -219,16 +239,33 @@ def main() -> None:
         log.info("指定分支: %s", args.branch)
 
     collected = 0
+    failed_accounts: list[dict[str, str]] = []
+
     for account, repo, pat in (("B", args.repo_b, args.pat_b), ("C", args.repo_c, args.pat_c)):
         log.info("等待 %s (%s) 评分完成...", account, repo)
-        run_id = wait_for_workflow(repo, pat)
+        run_id, wait_err = wait_for_workflow(repo, pat)
         if run_id is None:
+            failed_accounts.append({
+                "account": account,
+                "repo": repo,
+                "error": wait_err,
+            })
+            send_slave_alert(account, repo, wait_err)
             continue
+
         log.info("  %s 已完成 (run %s)，下载评分历史", account, run_id)
         history = download_history_file(repo, pat, branches=branches)
         if history is None:
+            err_dl = f"评分已完成 (run {run_id})，但所有候选分支均未取到 {HISTORY_PATH}"
             print(f"::warning::{account} ({repo}) 未取到评分历史，该账户本次不参与历史加权")
+            failed_accounts.append({
+                "account": account,
+                "repo": repo,
+                "error": err_dl,
+            })
+            send_slave_alert(account, repo, err_dl, run_id=run_id)
             continue
+
         merge_and_save(account, history, out_dir)
         collected += 1
 
@@ -239,6 +276,32 @@ def main() -> None:
             f"（请检查 B/C 的 {WORKFLOW_NAME} 是否成功、{HISTORY_PATH} 是否已提交）"
         )
     log.info("收集完成，成功账户 %d 个，目录: %s", collected, out_dir)
+
+    # 写入从节点收集状态到 data/slave_status.json
+    status_file = out_dir.parent / "slave_status.json"
+    status_data = {
+        "collected_count": collected,
+        "failed_count": len(failed_accounts),
+        "failed_accounts": failed_accounts,
+        "has_failure": len(failed_accounts) > 0,
+    }
+    try:
+        with open(status_file, "w", encoding="utf-8") as f:
+            json.dump(status_data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        log.warning("保存 slave_status.json 失败: %s", e)
+
+    # 写入 GITHUB_OUTPUT
+    gh_output = os.environ.get("GITHUB_OUTPUT", "")
+    if gh_output:
+        try:
+            with open(gh_output, "a", encoding="utf-8") as f:
+                f.write(f"has_slave_failure={'true' if failed_accounts else 'false'}\n")
+                f.write(f"collected_slaves_count={collected}\n")
+                failed_str = ",".join(x["account"] for x in failed_accounts)
+                f.write(f"failed_slave_nodes={failed_str}\n")
+        except Exception as e:
+            log.warning("写入 GITHUB_OUTPUT 失败: %s", e)
 
 
 if __name__ == "__main__":

@@ -17,10 +17,14 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import sys
 import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+# 确保能正确导入同一目录下的 feishu_notifier
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -286,10 +290,98 @@ def format_backtest_console(summary: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def save_backtest_records(summary: dict[str, Any], output_latest: str | Path) -> None:
+    """持久化保存回测结果（包括最新记录、历史归档及历史汇总统计）。"""
+    if "error" in summary:
+        log.warning("回测结果包含异常，跳过历史归档: %s", summary["error"])
+        return
+
+    report_date = summary.get("report_date")
+    if not report_date:
+        log.warning("未包含有效 report_date，跳过历史归档")
+        return
+
+    # 1. 保存/更新 backtest_latest.json
+    out_latest_path = Path(output_latest)
+    out_latest_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_latest_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+    log.info("最新回测数据已保存到: %s", out_latest_path)
+
+    # 2. 历史明细归档到 data/backtest_history/<report_date>.json
+    history_dir = out_latest_path.parent / "backtest_history"
+    history_dir.mkdir(parents=True, exist_ok=True)
+    history_file = history_dir / f"{report_date}.json"
+    with open(history_file, "w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+    log.info("历史回测明细已归档到: %s", history_file)
+
+    # 3. 维护历史汇总表 data/backtest_summary.json
+    summary_file = out_latest_path.parent / "backtest_summary.json"
+    history_list: list[dict[str, Any]] = []
+    if summary_file.exists():
+        try:
+            with open(summary_file, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                if isinstance(loaded, list):
+                    history_list = loaded
+        except Exception as e:
+            log.warning("读取已有 backtest_summary.json 异常: %s", e)
+
+    entry = {
+        "report_date": report_date,
+        "backtest_date": summary.get("backtest_date"),
+        "benchmark": summary.get("benchmark"),
+        "benchmark_return_pct": summary.get("benchmark_return_pct"),
+        "portfolio_avg_return_pct": summary.get("portfolio_avg_return_pct"),
+        "portfolio_avg_max_return_pct": summary.get("portfolio_avg_max_return_pct"),
+        "portfolio_alpha_pct": summary.get("portfolio_alpha_pct"),
+        "win_rate_pct": summary.get("win_rate_pct"),
+        "beat_bench_rate_pct": summary.get("beat_bench_rate_pct"),
+        "stocks_count": len(summary.get("details", [])),
+    }
+
+    # 替换已有日期记录或追加
+    updated = False
+    for i, it in enumerate(history_list):
+        if it.get("report_date") == report_date:
+            history_list[i] = entry
+            updated = True
+            break
+    if not updated:
+        history_list.append(entry)
+
+    # 按 report_date 升序排序
+    history_list.sort(key=lambda x: str(x.get("report_date", "")))
+
+    with open(summary_file, "w", encoding="utf-8") as f:
+        json.dump(history_list, f, ensure_ascii=False, indent=2)
+    log.info("历史回测汇总表已更新 (%d 个交易日): %s", len(history_list), summary_file)
+
+
+def notify_feishu_backtest(summary: dict[str, Any]) -> None:
+    """尝试通过飞书推送回测看板卡片。"""
+    try:
+        from feishu_notifier import build_backtest_card, send_to_feishu
+        card = build_backtest_card(summary)
+        success = send_to_feishu(card)
+        if success:
+            log.info("已成功推送回测看板到飞书群")
+        else:
+            log.info("飞书推送未执行或未完成（可能未配置 FEISHU_WEBHOOK）")
+    except Exception as e:
+        log.warning("调用飞书通知失败（不影响主流程）: %s", e)
+
+
 def main():
     parser = argparse.ArgumentParser(description="每日投研报告次日 T+1 回测工具")
     parser.add_argument("--date", help="指定报告日期（YYYY-MM-DD），缺省自动选最近一次")
     parser.add_argument("--output", help="回测结果输出 JSON 路径", default=str(DATA_DIR / "backtest_latest.json"))
+    parser.add_argument(
+        "--notify-feishu",
+        action="store_true",
+        help="是否在回测完成后推送飞书看板卡片",
+    )
     args = parser.parse_args()
 
     log.info("开始执行投研报告回测...")
@@ -303,13 +395,12 @@ def main():
     print(output_text)
 
     try:
-        out_path = Path(args.output)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(out_path, "w", encoding="utf-8") as f:
-            json.dump(summary, f, ensure_ascii=False, indent=2)
-        log.info("回测数据已保存到: %s", out_path)
+        save_backtest_records(summary, args.output)
     except Exception as e:
         log.warning("保存回测结果失败: %s", e)
+
+    if args.notify_feishu:
+        notify_feishu_backtest(summary)
 
 
 if __name__ == "__main__":

@@ -9,10 +9,15 @@ import json
 import logging
 import os
 import sys
+import urllib.error
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-import requests
+try:
+    import requests
+except ImportError:
+    requests = None
 
 # ---------- 加载 .env 文件 ----------
 _env_path = Path(__file__).resolve().parent.parent / ".env"
@@ -45,9 +50,183 @@ log.info("FEISHU_WEBHOOK 已配置: %s", bool(FEISHU_WEBHOOK))
 log.info("FEISHU_WEBHOOK_MAIN 已配置: %s", bool(FEISHU_WEBHOOK_MAIN))
 
 
-# ---------- 中文显示映射 ----------
+# ---------- 中文显示映射与股票名称查询 ----------
 # 飞书卡片面向中文用户，正文里尽量不出现英文。所有"英文键 → 中文名"的映射
 # 集中放在这里，避免散落在拼接字符串里（散着放的结果就是漏掉几处）。
+
+STOCK_NAME_MAP = {
+    "601288": "农业银行", "601398": "工商银行", "601166": "兴业银行",
+    "601328": "交通银行", "601211": "国泰海通", "601688": "华泰证券",
+    "601601": "中国太保", "600036": "招商银行", "601318": "中国平安",
+    "601988": "中国银行", "600519": "贵州茅台", "000858": "五粮液",
+    "000001": "平安银行", "002415": "海康威视", "600900": "长江电力",
+    "000333": "美的集团", "601888": "中国中免", "600276": "恒瑞医药",
+    "000651": "格力电器", "600809": "山西汾酒", "300750": "宁德时代",
+    "002714": "牧原股份", "601012": "隆基绿能", "601918": "新集能源",
+    "601668": "中国建筑", "600028": "中国石化",
+}
+
+
+def _load_snapshot_names() -> dict[str, str]:
+    """尝试从本地快照文件加载股票代码 -> 股票名称映射。"""
+    names: dict[str, str] = {}
+    candidates = [
+        Path(__file__).resolve().parent.parent / "data" / "snapshot_latest.json",
+        Path(__file__).resolve().parent.parent / "data" / "snapshot_cache.json",
+    ]
+    for p in candidates:
+        if p.is_file():
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                stocks = data.get("stocks") if isinstance(data, dict) else data
+                if isinstance(stocks, list):
+                    for s in stocks:
+                        if isinstance(s, dict) and s.get("code") and s.get("name"):
+                            names[str(s["code"]).strip().zfill(6)] = str(s["name"]).strip()
+                if names:
+                    break
+            except Exception:
+                continue
+    return names
+
+
+def fetch_stock_names(codes: list[str]) -> dict[str, str]:
+    """批量获取 A 股股票代码对应的真实中文名称（支持深市、沪市、北交所）。
+
+    采用多级保障：
+      1. 内存字典缓存（STOCK_NAME_MAP）；
+      2. 本地快照文件；
+      3. 腾讯行情接口批量查询（qt.gtimg.cn，速度快、免密、覆盖全市场）；
+      4. 新浪行情接口备用（hq.sinajs.cn）；
+      5. 兜底返回代码本身。
+    """
+    result: dict[str, str] = {}
+    to_fetch: list[str] = []
+
+    for raw_code in codes:
+        c = str(raw_code).strip()
+        if not c:
+            continue
+        code = c.zfill(6) if c.isdigit() and len(c) < 6 else c
+        if code in STOCK_NAME_MAP:
+            result[code] = STOCK_NAME_MAP[code]
+        else:
+            to_fetch.append(code)
+
+    if not to_fetch:
+        return result
+
+    # 尝试从本地快照匹配
+    snap_names = _load_snapshot_names()
+    still_missing: list[str] = []
+    for code in to_fetch:
+        if code in snap_names:
+            name = snap_names[code]
+            STOCK_NAME_MAP[code] = name
+            result[code] = name
+        else:
+            still_missing.append(code)
+
+    if not still_missing:
+        return result
+
+    # 尝试从腾讯实时行情接口批量查询
+    try:
+        query_symbols = []
+        for c in still_missing:
+            prefix = "sz" if c.startswith(("0", "3")) else ("bj" if c.startswith(("4", "8", "9")) else "sh")
+            query_symbols.append(f"{prefix}{c}")
+
+        url = f"https://qt.gtimg.cn/q={','.join(query_symbols)}"
+        req = urllib.request.Request(
+            url,
+            headers={
+                "Referer": "https://stockapp.finance.qq.com",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            text = resp.read().decode("gbk", errors="ignore")
+            for line in text.split(";"):
+                parts = line.strip().split("~")
+                if len(parts) > 2:
+                    name = parts[1].strip()
+                    code = parts[2].strip()
+                    if name and code:
+                        STOCK_NAME_MAP[code] = name
+                        result[code] = name
+    except Exception as e:
+        log.warning("腾讯行情接口查询股票名称失败: %s，尝试备用接口", e)
+
+    # 检查是否还有缺失的标的，尝试新浪接口
+    sina_missing = [c for c in still_missing if c not in result]
+    if sina_missing:
+        try:
+            query_symbols = []
+            for c in sina_missing:
+                prefix = "sz" if c.startswith(("0", "3")) else ("bj" if c.startswith(("4", "8", "9")) else "sh")
+                query_symbols.append(f"{prefix}{c}")
+            url = f"http://hq.sinajs.cn/list={','.join(query_symbols)}"
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "Referer": "https://finance.sina.com.cn",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                text = resp.read().decode("gbk", errors="ignore")
+                for line in text.strip().split("\n"):
+                    if "=" not in line:
+                        continue
+                    left, right = line.split("=", 1)
+                    sym = left.split("str_")[-1].strip()
+                    code = sym[2:] if len(sym) > 2 else sym
+                    content = right.strip('"; \r\n')
+                    if content:
+                        parts = content.split(",")
+                        if parts and parts[0].strip():
+                            name = parts[0].strip()
+                            STOCK_NAME_MAP[code] = name
+                            result[code] = name
+        except Exception as e:
+            log.warning("新浪行情接口查询股票名称失败: %s", e)
+
+    # 兜底：仍然无法获取的，回退为代码本身
+    for code in still_missing:
+        if code not in result:
+            result[code] = code
+
+    return result
+
+
+def get_stock_name(stock_code: str) -> str:
+    """获取单个股票代码的中文名称。"""
+    c = str(stock_code).strip()
+    code = c.zfill(6) if c.isdigit() and len(c) < 6 else c
+    if code in STOCK_NAME_MAP:
+        return STOCK_NAME_MAP[code]
+    names = fetch_stock_names([code])
+    return names.get(code, code)
+
+
+def _format_stock_tokens_with_names(stocks_csv_or_list: str) -> str:
+    """把逗号或空格分隔的股票代码串转成带中文名称的字符串，如 '新集能源（601918）、中国建筑（601668）'。"""
+    if not stocks_csv_or_list:
+        return ""
+    raw_tokens = [s.strip() for s in stocks_csv_or_list.replace("，", ",").split(",") if s.strip()]
+    if not raw_tokens:
+        return stocks_csv_or_list
+    names_map = fetch_stock_names(raw_tokens)
+    formatted = []
+    for c in raw_tokens:
+        nm = names_map.get(c)
+        if nm and nm != c:
+            formatted.append(f"{nm}（{c}）")
+        else:
+            formatted.append(c)
+    return "、".join(formatted)
 
 # 详细报告各小节标题。与 run_skills_evaluation.py 里给 LLM 的 sections 定义一致，
 # 此前是用 section_key.replace("_", " ").title() 直接生成的（Company Overview 之类）。
@@ -152,6 +331,19 @@ def build_card_message(results: list) -> dict:
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     stock_count = len(results)
 
+    # 预处理：确保所有结果中的 stock_name 为真实中文股票名称
+    need_fetch = [
+        str(r.get("stock_code", "")).strip() for r in results
+        if not r.get("stock_name") or str(r.get("stock_name")).strip() == str(r.get("stock_code")).strip()
+    ]
+    if need_fetch:
+        fetched = fetch_stock_names(need_fetch)
+        for r in results:
+            code = str(r.get("stock_code", "")).strip()
+            name = str(r.get("stock_name", "")).strip()
+            if not name or name == code:
+                r["stock_name"] = fetched.get(code, code)
+
     card = {
         "msg_type": "interactive",
         "card": {
@@ -169,13 +361,22 @@ def build_card_message(results: list) -> dict:
 
     elements = card["card"]["elements"]
 
-    # 摘要块
-    stock_codes = ", ".join(r["stock_code"] for r in results)
+    # 摘要块：显示格式为 股票名（股票代码）
+    summary_parts = []
+    for r in results:
+        code = str(r.get("stock_code", "")).strip()
+        name = str(r.get("stock_name", "")).strip()
+        if name and name != code:
+            summary_parts.append(f"{name}（{code}）")
+        else:
+            summary_parts.append(code)
+    stock_summary_text = "、".join(summary_parts)
+
     elements.append({
         "tag": "div",
         "text": {
             "tag": "lark_md",
-            "content": f"本次股票分析共 {stock_count} 支：{stock_codes}",
+            "content": f"本次股票分析共 {stock_count} 支：{stock_summary_text}",
         },
     })
 
@@ -185,8 +386,8 @@ def build_card_message(results: list) -> dict:
     medals = ["🥇", "🥈", "🥉"]
     for idx, r in enumerate(sorted_res, start=1):
         icon = medals[idx - 1] if idx <= 3 else "  "
-        code = r.get("stock_code", "")
-        name = r.get("stock_name", "")
+        code = str(r.get("stock_code", "")).strip()
+        name = str(r.get("stock_name", "")).strip() or code
         score = r.get("final_score", 0)
         grade = _score_grade(score)
         bar = _render_progress_bar(score, width=8)
@@ -202,8 +403,8 @@ def build_card_message(results: list) -> dict:
     elements.append({"tag": "hr"})
 
     for r in results:
-        stock_code = r["stock_code"]
-        stock_name = r["stock_name"]
+        stock_code = str(r["stock_code"]).strip()
+        stock_name = str(r.get("stock_name", "")).strip() or get_stock_name(stock_code)
         final_score = r["final_score"]
         highlights = r.get("highlights", [])
         risks = r.get("risks", [])
@@ -213,9 +414,10 @@ def build_card_message(results: list) -> dict:
         grade = _score_grade(final_score)
         bar = _render_progress_bar(final_score, width=10)
 
-        # 基础信息块
+        # 基础信息块（标的标题带股票名与股票代码）
+        header_title = f"{stock_name}（{stock_code}）" if stock_name and stock_name != stock_code else stock_code
         basic_content = (
-            f"**{stock_name}（{stock_code}）**\n"
+            f"**{header_title}**\n"
             f"综合评分：**{final_score}** 分 {bar}　{grade}\n"
         )
         if failed > 0:
@@ -235,7 +437,8 @@ def build_card_message(results: list) -> dict:
         detailed = r.get("detailed_report")
         if detailed and detailed.get("summary"):
             report_content = "\n\n---\n\n"
-            report_content += f"**\U0001f4d8 详细分析报告 - {stock_name}**\n\n"
+            report_title = f"{stock_name}（{stock_code}）" if stock_name and stock_name != stock_code else stock_name
+            report_content += f"**\U0001f4d8 详细分析报告 - {report_title}**\n\n"
             report_content += f"**投资建议：** {_text_or(detailed.get('recommendation'))}\n"
             report_content += f"**综合评分：** {_text_or(detailed.get('overall_score'))}/100\n\n"
             report_content += f"**摘要：** {detailed['summary']}\n\n"
@@ -363,6 +566,10 @@ def build_main_card(
     status_b = "成功" if code_b in ("201", "204") else f"失败（{code_b}）"
     status_c = "成功" if code_c in ("201", "204") else f"失败（{code_c}）"
 
+    stocks_fmt = _format_stock_tokens_with_names(stocks)
+    first5_fmt = _format_stock_tokens_with_names(first5)
+    last5_fmt = _format_stock_tokens_with_names(last5)
+
     elements = [
         # 第一段：初选清单
         {
@@ -371,10 +578,10 @@ def build_main_card(
                 "tag": "lark_md",
                 "content": (
                     f"本次股票初选共 {len(stocks.split(','))} 支\n"
-                    f"**初选股票：** {stocks}\n"
+                    f"**初选股票：** {stocks_fmt or stocks}\n"
                     f"\n"
-                    f"**前 5 支 → 账户 B：** {first5}\n"
-                    f"**后 5 支 → 账户 C：** {last5}"
+                    f"**前 5 支 → 账户 B：** {first5_fmt or first5}\n"
+                    f"**后 5 支 → 账户 C：** {last5_fmt or last5}"
                 ),
             },
         },
@@ -426,8 +633,184 @@ def build_main_card(
     return card
 
 
+def build_alert_card(
+    node: str,
+    error: str,
+    run_url: str = "",
+    details: str = "",
+) -> dict:
+    """构建节点运行失败告警卡片（红色警报主题）。"""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    content_lines = [
+        f"**🚨 故障节点：** {node}",
+        f"**❌ 异常原因：** {error}",
+        f"**⏰ 告警时间：** {now}",
+    ]
+    if details:
+        content_lines.append(f"**📝 详细信息：** {details}")
+
+    elements: list[dict] = [
+        {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": "\n".join(content_lines),
+            },
+        }
+    ]
+
+    if run_url:
+        elements.append({
+            "tag": "action",
+            "actions": [
+                {
+                    "tag": "button",
+                    "text": {
+                        "tag": "plain_text",
+                        "content": "查看 GitHub Actions 运行记录",
+                    },
+                    "type": "danger",
+                    "url": run_url,
+                }
+            ],
+        })
+
+    elements.append({"tag": "hr"})
+    elements.append({
+        "tag": "note",
+        "elements": [
+            {
+                "tag": "plain_text",
+                "content": "请检查 GitHub Secrets (PAT)、LLM API 余额或 Actions 日志进行排查",
+            }
+        ],
+    })
+
+    return {
+        "msg_type": "interactive",
+        "card": {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {
+                    "tag": "plain_text",
+                    "content": f"\U0001f6a8 节点运行失败告警 - {node}（{now}）",
+                },
+                "template": "red",
+            },
+            "elements": elements,
+        },
+    }
+
+
+def build_backtest_card(summary: dict) -> dict:
+    """构建每日投研报告 T+1 实盘回测卡片。"""
+    if "error" in summary:
+        return build_alert_card(
+            node="每日T+1回测器",
+            error=summary["error"],
+        )
+
+    rep_date = summary.get("report_date", "未知")
+    bt_date = summary.get("backtest_date", "未知")
+    bench_ret = summary.get("benchmark_return_pct", 0.0)
+    avg_ret = summary.get("portfolio_avg_return_pct", 0.0)
+    avg_max = summary.get("portfolio_avg_max_return_pct", 0.0)
+    alpha = summary.get("portfolio_alpha_pct", 0.0)
+    win_rate = summary.get("win_rate_pct", 0.0)
+    beat_rate = summary.get("beat_bench_rate_pct", 0.0)
+
+    header_template = "turquoise" if alpha >= 0 else "orange"
+
+    summary_text = (
+        f"**基准表现 (上证指数)：** {bench_ret:+.2f}%\n"
+        f"**组合次日平均收益：** {avg_ret:+.2f}%  （超额 Alpha: **{alpha:+.2f}%**）\n"
+        f"**早盘冲高兑现均值：** {avg_max:+.2f}%\n"
+        f"**次日正收益胜率：** {win_rate:.1f}%  |  **跑赢基准概率：** {beat_rate:.1f}%"
+    )
+
+    elements: list[dict] = [
+        {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": summary_text,
+            },
+        },
+        {"tag": "hr"},
+    ]
+
+    details = summary.get("details", [])
+    if details:
+        # 补全可能缺失的股票中文名称
+        missing_names = [
+            str(d["stock_code"]).strip() for d in details
+            if not d.get("stock_name") or str(d.get("stock_name")).strip() == str(d.get("stock_code")).strip()
+        ]
+        if missing_names:
+            fetched = fetch_stock_names(missing_names)
+            for d in details:
+                code = str(d.get("stock_code", "")).strip()
+                name = str(d.get("stock_name", "")).strip()
+                if not name or name == code:
+                    d["stock_name"] = fetched.get(code, code)
+
+        lines = [
+            "**\U0001f4ca 标的实盘次日表现明细：**",
+            f"{'代码':<8} {'名称':<6} {'评分':>4} | {'次日涨跌':>8} {'冲高幅度':>8} | {'超额Alpha':>8}",
+            "-" * 50,
+        ]
+        for d in details:
+            if "error" in d:
+                lines.append(f"{d['stock_code']:<8} {d.get('stock_name', ''):<6} {d.get('score', 0):>4.0f} | {d['error']}")
+            else:
+                code = d["stock_code"]
+                name = d.get("stock_name", code)
+                score = d.get("score", 0.0)
+                ret = d.get("return_pct", 0.0)
+                mret = d.get("max_return_pct", 0.0)
+                alp = d.get("alpha_vs_bench", 0.0)
+                lines.append(
+                    f"{code:<8} {name:<6} {score:>4.0f} | {ret:>+7.2f}% {mret:>+7.2f}% | {alp:>+7.2f}%"
+                )
+
+        elements.append({
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": "```\n" + "\n".join(lines) + "\n```",
+            },
+        })
+
+    elements.append({"tag": "hr"})
+    elements.append({
+        "tag": "note",
+        "elements": [
+            {
+                "tag": "plain_text",
+                "content": "每日盘后由 GitHub Actions 自动回测上个交易日推荐在今日的表现并提交留存",
+            }
+        ],
+    })
+
+    return {
+        "msg_type": "interactive",
+        "card": {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {
+                    "tag": "plain_text",
+                    "content": f"\U0001f4ca T+1 实盘回测看板（{rep_date} 推荐 → {bt_date} 实盘）",
+                },
+                "template": header_template,
+            },
+            "elements": elements,
+        },
+    }
+
+
 def send_to_feishu(card_data: dict, webhook_url: str = "") -> bool:
-    """将卡片消息发送到飞书群聊。"""
+    """将卡片消息发送到飞书群聊（优先使用 requests，若未安装则自动回退至 urllib）。"""
     url = webhook_url or FEISHU_WEBHOOK_MAIN
 
     if not url:
@@ -436,21 +819,34 @@ def send_to_feishu(card_data: dict, webhook_url: str = "") -> bool:
         return False
 
     try:
-        resp = requests.post(
-            url,
-            json=card_data,
-            headers={"Content-Type": "application/json"},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        result = resp.json()
+        if requests is not None:
+            resp = requests.post(
+                url,
+                json=card_data,
+                headers={"Content-Type": "application/json"},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            result = resp.json()
+        else:
+            payload_bytes = json.dumps(card_data).encode("utf-8")
+            req = urllib.request.Request(
+                url,
+                data=payload_bytes,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                body = resp.read().decode("utf-8")
+                result = json.loads(body) if body else {}
+
         if result.get("code", -1) == 0:
             log.info("飞书消息发送成功!")
             return True
         else:
             log.error("飞书返回错误: code=%d, msg=%s", result.get("code"), result.get("msg"))
             return False
-    except requests.exceptions.RequestException as e:
+    except Exception as e:
         log.error("发送飞书消息失败: %s", e)
         return False
 
@@ -479,9 +875,9 @@ def main():
     )
     parser.add_argument(
         "--mode",
-        choices=["default", "main"],
+        choices=["default", "main", "alert", "backtest"],
         default="default",
-        help="运行模式：default=推送评分结果，main=主节点通知（默认: default）",
+        help="运行模式：default=推送评分结果，main=主节点通知，alert=节点失败告警，backtest=T+1回测看板（默认: default）",
     )
     parser.add_argument("--stocks", default="", help="初选股票列表（主节点模式）")
     parser.add_argument("--first5", default="", help="前5支股票（主节点模式）")
@@ -492,6 +888,17 @@ def main():
         "--theme-summary",
         default="data/theme_summary.json",
         help="短线热点题材总结文件路径（主节点模式，默认: data/theme_summary.json）",
+    )
+    # 告警模式参数
+    parser.add_argument("--node", default="未知节点", help="发生故障的节点名称（alert 模式）")
+    parser.add_argument("--error", default="任务执行异常", help="错误摘要或异常原因（alert 模式）")
+    parser.add_argument("--run-url", default="", help="GitHub Actions Run URL 链接（alert 模式）")
+    parser.add_argument("--details", default="", help="补充详细错误日志（alert 模式）")
+    # 回测模式参数
+    parser.add_argument(
+        "--backtest",
+        default="data/backtest_latest.json",
+        help="T+1 回测结果 JSON 文件路径（backtest 模式，默认: data/backtest_latest.json）",
     )
     args = parser.parse_args()
 
@@ -522,6 +929,35 @@ def main():
         )
         log.info("主节点飞书通知预览:\n%s", json.dumps(card_data, ensure_ascii=False, indent=2))
         success = send_to_feishu(card_data)
+
+    elif args.mode == "alert":
+        log.warning("正在生成节点失败告警卡片: %s - %s", args.node, args.error)
+        card_data = build_alert_card(
+            node=args.node,
+            error=args.error,
+            run_url=args.run_url,
+            details=args.details,
+        )
+        log.info("失败告警卡片预览:\n%s", json.dumps(card_data, ensure_ascii=False, indent=2))
+        success = send_to_feishu(card_data)
+
+    elif args.mode == "backtest":
+        if not os.path.isfile(args.backtest):
+            log.error("回测结果文件不存在: %s", args.backtest)
+            sys.exit(1)
+
+        try:
+            with open(args.backtest, "r", encoding="utf-8") as f:
+                bt_summary = json.load(f)
+            log.info("成功读取回测结果: %s", args.backtest)
+        except json.JSONDecodeError as e:
+            log.error("回测结果文件 JSON 解析失败: %s", e)
+            sys.exit(1)
+
+        card_data = build_backtest_card(bt_summary)
+        log.info("回测看板卡片预览:\n%s", json.dumps(card_data, ensure_ascii=False, indent=2))
+        success = send_to_feishu(card_data)
+
     else:
         if not os.path.isfile(args.result):
             log.error("结果文件不存在: %s", args.result)

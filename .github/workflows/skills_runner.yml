@@ -61,7 +61,6 @@ jobs:
       - name: 飞书推送评分结果
         run: |
           python scripts/feishu_notifier.py --result analysis_result.json
-
           echo "飞书通知完成"
 
       - name: 提交评分到仓库
@@ -77,3 +76,12 @@ jobs:
           git diff --cached --quiet || git commit -m "Skills scores: $(date +%Y-%m-%d)"
           git push
           echo "评分历史已提交到仓库"
+
+      - name: Skills评分运行失败告警
+        if: failure()
+        run: |
+          python scripts/feishu_notifier.py \
+            --mode alert \
+            --node "主节点 Skills 深度评分" \
+            --error "Skills 深度评分运行失败，请查看 GitHub Actions 日志排查" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
