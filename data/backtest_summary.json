@@ -10,5 +10,17 @@
     "win_rate_pct": 80.0,
     "beat_bench_rate_pct": 80.0,
     "stocks_count": 5
+  },
+  {
+    "report_date": "2026-11-06",
+    "backtest_date": "2026-11-06",
+    "benchmark": "上证指数 (000001)",
+    "benchmark_return_pct": -1.1,
+    "portfolio_avg_return_pct": -3.15,
+    "portfolio_avg_max_return_pct": -0.93,
+    "portfolio_alpha_pct": -2.05,
+    "win_rate_pct": 20.0,
+    "beat_bench_rate_pct": 20.0,
+    "stocks_count": 5
   }
 ]

@@ -1,0 +1,83 @@
+{
+  "report_date": "2026-11-06",
+  "backtest_date": "2026-11-06",
+  "benchmark": "上证指数 (000001)",
+  "benchmark_return_pct": -1.1,
+  "portfolio_avg_return_pct": -3.15,
+  "portfolio_avg_max_return_pct": -0.93,
+  "portfolio_alpha_pct": -2.05,
+  "win_rate_pct": 20.0,
+  "beat_bench_rate_pct": 20.0,
+  "details": [
+    {
+      "stock_code": "601668",
+      "stock_name": "中国建筑",
+      "score": 73.0,
+      "t_close": 4.65,
+      "t1_open": 4.66,
+      "t1_high": 4.71,
+      "t1_low": 4.62,
+      "t1_close": 4.71,
+      "return_pct": 1.29,
+      "max_return_pct": 1.29,
+      "max_drawdown_pct": -0.65,
+      "alpha_vs_bench": 2.39
+    },
+    {
+      "stock_code": "603979",
+      "stock_name": "金诚信",
+      "score": 81.0,
+      "t_close": 59.41,
+      "t1_open": 56.5,
+      "t1_high": 57.18,
+      "t1_low": 54.9,
+      "t1_close": 54.94,
+      "return_pct": -7.52,
+      "max_return_pct": -3.75,
+      "max_drawdown_pct": -7.59,
+      "alpha_vs_bench": -6.42
+    },
+    {
+      "stock_code": "601872",
+      "stock_name": "招商轮船",
+      "score": 75.0,
+      "t_close": 16.84,
+      "t1_open": 16.3,
+      "t1_high": 16.62,
+      "t1_low": 16.04,
+      "t1_close": 16.17,
+      "return_pct": -3.98,
+      "max_return_pct": -1.31,
+      "max_drawdown_pct": -4.75,
+      "alpha_vs_bench": -2.88
+    },
+    {
+      "stock_code": "601699",
+      "stock_name": "潞安环能",
+      "score": 72.0,
+      "t_close": 13.58,
+      "t1_open": 13.44,
+      "t1_high": 13.54,
+      "t1_low": 13.25,
+      "t1_close": 13.43,
+      "return_pct": -1.1,
+      "max_return_pct": -0.29,
+      "max_drawdown_pct": -2.43,
+      "alpha_vs_bench": 0.0
+    },
+    {
+      "stock_code": "000426",
+      "stock_name": "兴业银锡",
+      "score": 73.0,
+      "t_close": 25.93,
+      "t1_open": 24.63,
+      "t1_high": 25.78,
+      "t1_low": 24.63,
+      "t1_close": 24.78,
+      "return_pct": -4.44,
+      "max_return_pct": -0.58,
+      "max_drawdown_pct": -5.01,
+      "alpha_vs_bench": -3.34
+    }
+  ]
+}
