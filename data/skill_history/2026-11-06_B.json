@@ -1,0 +1,51 @@
+{
+  "date": "2026-11-06",
+  "account": "B",
+  "results": [
+    {
+      "stock_code": "601668",
+      "stock_name": "中国建筑",
+      "final_score": 73,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "603979",
+      "stock_name": "金诚信",
+      "final_score": 81,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "601872",
+      "stock_name": "招商轮船",
+      "final_score": 75,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "601699",
+      "stock_name": "潞安环能",
+      "final_score": 72,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "000426",
+      "stock_name": "兴业银锡",
+      "final_score": 73,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    }
+  ]
+}
