@@ -1,0 +1,83 @@
+{
+  "report_date": "2026-11-09",
+  "backtest_date": "2026-11-09",
+  "benchmark": "上证指数 (000001)",
+  "benchmark_return_pct": 0.32,
+  "portfolio_avg_return_pct": 1.18,
+  "portfolio_avg_max_return_pct": 3.09,
+  "portfolio_alpha_pct": 0.86,
+  "win_rate_pct": 60.0,
+  "beat_bench_rate_pct": 40.0,
+  "details": [
+    {
+      "stock_code": "002245",
+      "stock_name": "蔚蓝锂芯",
+      "score": 74.0,
+      "t_close": 11.01,
+      "t1_open": 11.14,
+      "t1_high": 11.18,
+      "t1_low": 10.86,
+      "t1_close": 10.87,
+      "return_pct": -1.27,
+      "max_return_pct": 1.54,
+      "max_drawdown_pct": -1.36,
+      "alpha_vs_bench": -1.59
+    },
+    {
+      "stock_code": "002048",
+      "stock_name": "宁波华翔",
+      "score": 61.0,
+      "t_close": 18.91,
+      "t1_open": 19.2,
+      "t1_high": 19.56,
+      "t1_low": 18.66,
+      "t1_close": 18.96,
+      "return_pct": 0.26,
+      "max_return_pct": 3.44,
+      "max_drawdown_pct": -1.32,
+      "alpha_vs_bench": -0.06
+    },
+    {
+      "stock_code": "000807",
+      "stock_name": "云铝股份",
+      "score": 77.0,
+      "t_close": 24.52,
+      "t1_open": 24.8,
+      "t1_high": 25.13,
+      "t1_low": 24.76,
+      "t1_close": 24.87,
+      "return_pct": 1.43,
+      "max_return_pct": 2.49,
+      "max_drawdown_pct": 0.98,
+      "alpha_vs_bench": 1.11
+    },
+    {
+      "stock_code": "002611",
+      "stock_name": "东方精工",
+      "score": 58.0,
+      "t_close": 13.91,
+      "t1_open": 14.3,
+      "t1_high": 14.86,
+      "t1_low": 14.3,
+      "t1_close": 14.73,
+      "return_pct": 5.9,
+      "max_return_pct": 6.83,
+      "max_drawdown_pct": 2.8,
+      "alpha_vs_bench": 5.58
+    },
+    {
+      "stock_code": "600909",
+      "stock_name": "华安证券",
+      "score": 48.0,
+      "t_close": 6.86,
+      "t1_open": 6.92,
+      "t1_high": 6.94,
+      "t1_low": 6.83,
+      "t1_close": 6.83,
+      "return_pct": -0.44,
+      "max_return_pct": 1.17,
+      "max_drawdown_pct": -0.44,
+      "alpha_vs_bench": -0.76
+    }
+  ]
+}
