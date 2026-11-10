@@ -3,18 +3,18 @@
   "account": "B",
   "results": [
     {
-      "stock_code": "002245",
-      "stock_name": "蔚蓝锂芯",
-      "final_score": 74,
+      "stock_code": "002048",
+      "stock_name": "宁波华翔",
+      "final_score": 75,
       "reliable": true,
       "skill_total": 19,
       "skill_returned": 19,
       "llm_failed_count": 0
     },
     {
-      "stock_code": "002048",
-      "stock_name": "宁波华翔",
-      "final_score": 61,
+      "stock_code": "002245",
+      "stock_name": "蔚蓝锂芯",
+      "final_score": 79,
       "reliable": true,
       "skill_total": 19,
       "skill_returned": 19,
@@ -23,25 +23,25 @@
     {
       "stock_code": "000807",
       "stock_name": "云铝股份",
-      "final_score": 77,
+      "final_score": 81,
       "reliable": true,
       "skill_total": 19,
       "skill_returned": 19,
       "llm_failed_count": 0
     },
     {
-      "stock_code": "002611",
-      "stock_name": "东方精工",
-      "final_score": 58,
+      "stock_code": "000400",
+      "stock_name": "许继电气",
+      "final_score": 84,
       "reliable": true,
       "skill_total": 19,
       "skill_returned": 19,
       "llm_failed_count": 0
     },
     {
-      "stock_code": "600909",
-      "stock_name": "华安证券",
-      "final_score": 48,
+      "stock_code": "002697",
+      "stock_name": "红旗连锁",
+      "final_score": 54,
       "reliable": true,
       "skill_total": 19,
       "skill_returned": 19,

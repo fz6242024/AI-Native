@@ -3,18 +3,9 @@
   "account": "C",
   "results": [
     {
-      "stock_code": "002624",
-      "stock_name": "002624",
-      "final_score": 68,
-      "reliable": true,
-      "skill_total": 19,
-      "skill_returned": 19,
-      "llm_failed_count": 0
-    },
-    {
-      "stock_code": "002407",
-      "stock_name": "002407",
-      "final_score": 78,
+      "stock_code": "600566",
+      "stock_name": "600566",
+      "final_score": 59,
       "reliable": true,
       "skill_total": 19,
       "skill_returned": 19,
@@ -23,7 +14,7 @@
     {
       "stock_code": "002244",
       "stock_name": "002244",
-      "final_score": 67,
+      "final_score": 77,
       "reliable": true,
       "skill_total": 19,
       "skill_returned": 19,

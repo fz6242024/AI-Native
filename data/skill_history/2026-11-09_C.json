@@ -1,0 +1,51 @@
+{
+  "date": "2026-11-09",
+  "account": "C",
+  "results": [
+    {
+      "stock_code": "600909",
+      "stock_name": "华安证券",
+      "final_score": 51,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "601668",
+      "stock_name": "中国建筑",
+      "final_score": 73,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "002025",
+      "stock_name": "航天电器",
+      "final_score": 81,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "002611",
+      "stock_name": "东方精工",
+      "final_score": 61,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "002773",
+      "stock_name": "康弘药业",
+      "final_score": 65,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    }
+  ]
+}
