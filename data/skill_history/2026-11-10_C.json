@@ -1,0 +1,51 @@
+{
+  "date": "2026-11-10",
+  "account": "C",
+  "results": [
+    {
+      "stock_code": "002025",
+      "stock_name": "航天电器",
+      "final_score": 85,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "002497",
+      "stock_name": "雅化集团",
+      "final_score": 82,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "601333",
+      "stock_name": "广深铁路",
+      "final_score": 70,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "600498",
+      "stock_name": "烽火通信",
+      "final_score": 65,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "002611",
+      "stock_name": "东方精工",
+      "final_score": 45,
+      "reliable": false,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 10
+    }
+  ]
+}
