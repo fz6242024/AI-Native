@@ -1,0 +1,51 @@
+{
+  "date": "2026-11-11",
+  "account": "C",
+  "results": [
+    {
+      "stock_code": "600776",
+      "stock_name": "东方通信",
+      "final_score": 58,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "002703",
+      "stock_name": "浙江世宝",
+      "final_score": 55,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "600977",
+      "stock_name": "中国电影",
+      "final_score": 57,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "603920",
+      "stock_name": "世运电路",
+      "final_score": 82,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "002081",
+      "stock_name": "金 螳 螂",
+      "final_score": 48,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    }
+  ]
+}
