@@ -1,0 +1,51 @@
+{
+  "date": "2026-11-12",
+  "account": "C",
+  "results": [
+    {
+      "stock_code": "601668",
+      "stock_name": "中国建筑",
+      "final_score": 69,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "002081",
+      "stock_name": "金 螳 螂",
+      "final_score": 38,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "603283",
+      "stock_name": "赛腾股份",
+      "final_score": 44,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "000887",
+      "stock_name": "中鼎股份",
+      "final_score": 79,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "603345",
+      "stock_name": "安井食品",
+      "final_score": 84,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    }
+  ]
+}
