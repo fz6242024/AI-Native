@@ -1,0 +1,51 @@
+{
+  "date": "2026-11-13",
+  "account": "B",
+  "results": [
+    {
+      "stock_code": "603799",
+      "stock_name": "华友钴业",
+      "final_score": 76,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "601872",
+      "stock_name": "招商轮船",
+      "final_score": 84,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "000887",
+      "stock_name": "中鼎股份",
+      "final_score": 82,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "600711",
+      "stock_name": "盛屯矿业",
+      "final_score": 68,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "002432",
+      "stock_name": "九安医疗",
+      "final_score": 74,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    }
+  ]
+}
