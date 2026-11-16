@@ -1,0 +1,51 @@
+{
+  "date": "2026-11-16",
+  "account": "B",
+  "results": [
+    {
+      "stock_code": "601233",
+      "stock_name": "桐昆股份",
+      "final_score": 55,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "002611",
+      "stock_name": "东方精工",
+      "final_score": 49,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "600522",
+      "stock_name": "中天科技",
+      "final_score": 79,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "600267",
+      "stock_name": "海正药业",
+      "final_score": 52,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "002432",
+      "stock_name": "九安医疗",
+      "final_score": 79,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    }
+  ]
+}
