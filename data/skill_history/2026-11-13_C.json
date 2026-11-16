@@ -3,9 +3,27 @@
   "account": "C",
   "results": [
     {
+      "stock_code": "000690",
+      "stock_name": "宝新能源",
+      "final_score": 73,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "603345",
+      "stock_name": "安井食品",
+      "final_score": 83,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
       "stock_code": "002913",
       "stock_name": "奥士康",
-      "final_score": 68,
+      "final_score": 60,
       "reliable": true,
       "skill_total": 19,
       "skill_returned": 19,
@@ -21,27 +39,9 @@
       "llm_failed_count": 0
     },
     {
-      "stock_code": "000690",
-      "stock_name": "宝新能源",
-      "final_score": 54,
-      "reliable": true,
-      "skill_total": 19,
-      "skill_returned": 19,
-      "llm_failed_count": 0
-    },
-    {
-      "stock_code": "603345",
-      "stock_name": "安井食品",
-      "final_score": 81,
-      "reliable": true,
-      "skill_total": 19,
-      "skill_returned": 19,
-      "llm_failed_count": 0
-    },
-    {
       "stock_code": "601333",
       "stock_name": "广深铁路",
-      "final_score": 72,
+      "final_score": 58,
       "reliable": true,
       "skill_total": 19,
       "skill_returned": 19,

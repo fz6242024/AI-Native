@@ -1,0 +1,51 @@
+{
+  "date": "2026-11-16",
+  "account": "C",
+  "results": [
+    {
+      "stock_code": "002432",
+      "stock_name": "九安医疗",
+      "final_score": 68,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "000066",
+      "stock_name": "中国长城",
+      "final_score": 70,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "000690",
+      "stock_name": "宝新能源",
+      "final_score": 69,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "600895",
+      "stock_name": "张江高科",
+      "final_score": 75,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "000034",
+      "stock_name": "神州数码",
+      "final_score": 61,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    }
+  ]
+}
