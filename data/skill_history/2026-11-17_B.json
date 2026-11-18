@@ -3,8 +3,8 @@
   "account": "B",
   "results": [
     {
-      "stock_code": "002432",
-      "stock_name": "九安医疗",
+      "stock_code": "603799",
+      "stock_name": "华友钴业",
       "final_score": 77,
       "reliable": true,
       "skill_total": 19,
@@ -12,27 +12,9 @@
       "llm_failed_count": 0
     },
     {
-      "stock_code": "000400",
-      "stock_name": "许继电气",
-      "final_score": 82,
-      "reliable": true,
-      "skill_total": 19,
-      "skill_returned": 19,
-      "llm_failed_count": 0
-    },
-    {
-      "stock_code": "000062",
-      "stock_name": "深圳华强",
-      "final_score": 66,
-      "reliable": true,
-      "skill_total": 19,
-      "skill_returned": 19,
-      "llm_failed_count": 0
-    },
-    {
-      "stock_code": "603799",
-      "stock_name": "华友钴业",
-      "final_score": 75,
+      "stock_code": "002432",
+      "stock_name": "九安医疗",
+      "final_score": 74,
       "reliable": true,
       "skill_total": 19,
       "skill_returned": 19,
@@ -41,7 +23,25 @@
     {
       "stock_code": "600362",
       "stock_name": "江西铜业",
-      "final_score": 76,
+      "final_score": 67,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "000062",
+      "stock_name": "深圳华强",
+      "final_score": 51,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "000400",
+      "stock_name": "许继电气",
+      "final_score": 79,
       "reliable": true,
       "skill_total": 19,
       "skill_returned": 19,
