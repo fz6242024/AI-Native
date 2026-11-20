@@ -1,0 +1,51 @@
+{
+  "date": "2026-11-20",
+  "account": "B",
+  "results": [
+    {
+      "stock_code": "000887",
+      "stock_name": "中鼎股份",
+      "final_score": 69,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "002432",
+      "stock_name": "九安医疗",
+      "final_score": 76,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "002241",
+      "stock_name": "歌尔股份",
+      "final_score": 70,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "002048",
+      "stock_name": "宁波华翔",
+      "final_score": 69,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "601717",
+      "stock_name": "中创智领",
+      "final_score": 76,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    }
+  ]
+}

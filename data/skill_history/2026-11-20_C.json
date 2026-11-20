@@ -1,0 +1,51 @@
+{
+  "date": "2026-11-20",
+  "account": "C",
+  "results": [
+    {
+      "stock_code": "603799",
+      "stock_name": "华友钴业",
+      "final_score": 83,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "600863",
+      "stock_name": "华能蒙电",
+      "final_score": 54,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "002532",
+      "stock_name": "天山铝业",
+      "final_score": 78,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "600595",
+      "stock_name": "中孚实业",
+      "final_score": 63,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    },
+    {
+      "stock_code": "600312",
+      "stock_name": "平高电气",
+      "final_score": 86,
+      "reliable": true,
+      "skill_total": 19,
+      "skill_returned": 19,
+      "llm_failed_count": 0
+    }
+  ]
+}
