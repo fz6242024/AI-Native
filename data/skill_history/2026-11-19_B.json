@@ -3,9 +3,9 @@
   "account": "B",
   "results": [
     {
-      "stock_code": "002048",
-      "stock_name": "宁波华翔",
-      "final_score": 72,
+      "stock_code": "002756",
+      "stock_name": "永兴材料",
+      "final_score": 80,
       "reliable": true,
       "skill_total": 19,
       "skill_returned": 19,
@@ -14,16 +14,16 @@
     {
       "stock_code": "002241",
       "stock_name": "歌尔股份",
-      "final_score": 78,
+      "final_score": 82,
       "reliable": true,
       "skill_total": 19,
       "skill_returned": 19,
       "llm_failed_count": 0
     },
     {
-      "stock_code": "002756",
-      "stock_name": "永兴材料",
-      "final_score": 81,
+      "stock_code": "002048",
+      "stock_name": "宁波华翔",
+      "final_score": 60,
       "reliable": true,
       "skill_total": 19,
       "skill_returned": 19,
@@ -32,7 +32,7 @@
     {
       "stock_code": "002487",
       "stock_name": "大金重工",
-      "final_score": 82,
+      "final_score": 83,
       "reliable": true,
       "skill_total": 19,
       "skill_returned": 19,
@@ -41,7 +41,7 @@
     {
       "stock_code": "002192",
       "stock_name": "融捷股份",
-      "final_score": 68,
+      "final_score": 55,
       "reliable": true,
       "skill_total": 19,
       "skill_returned": 19,
