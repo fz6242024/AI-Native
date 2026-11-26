@@ -133,14 +133,14 @@
   },
   {
     "report_date": "2026-11-20",
-    "backtest_date": "2026-11-25",
+    "backtest_date": "2026-11-26",
     "benchmark": "上证指数 (000001)",
-    "benchmark_return_pct": -2.03,
-    "portfolio_avg_return_pct": -3.76,
-    "portfolio_avg_max_return_pct": 0.46,
-    "portfolio_alpha_pct": -1.73,
-    "win_rate_pct": 0.0,
-    "beat_bench_rate_pct": 10.0,
+    "benchmark_return_pct": 0.01,
+    "portfolio_avg_return_pct": -0.09,
+    "portfolio_avg_max_return_pct": 2.57,
+    "portfolio_alpha_pct": -0.1,
+    "win_rate_pct": 50.0,
+    "beat_bench_rate_pct": 50.0,
     "stocks_count": 10
   }
 ]
